@@ -1,8 +1,12 @@
 -- =============================================================
 -- 03_inputs_forecast.sql
--- Forecast de órdenes por seller × mes (versión más reciente)
+-- Forecast de órdenes por seller × mes
 -- Fuente: core.forecast.official_forecast_temp
 -- Granularidad output: seller_id × forecast_month
+--
+-- NOTA: la tabla ya refleja el forecast oficial vigente.
+--       No se filtra por version_id — las versiones son control
+--       interno y no deben afectar la lectura de datos.
 --
 -- NOTA: cohort_month viene de dim_seller (no del forecast)
 --       para que ajustes administrativos de cohorte apliquen
@@ -17,19 +21,13 @@ WITH params AS (
         NULL::VARCHAR  AS segment_filter    -- 'Starter','Plus','Top','Enterprise', NULL=todos
 ),
 
-latest_version AS (
-    SELECT MAX(version_id) AS version_id
-    FROM core.forecast.official_forecast_temp
-),
-
 forecast_monthly AS (
     SELECT
-        f.seller_id,
-        DATE_TRUNC('month', f.date)::DATE   AS forecast_month,
-        SUM(f.forecasted_orders)            AS forecasted_orders
-    FROM core.forecast.official_forecast_temp f
-    INNER JOIN latest_version lv ON f.version_id = lv.version_id
-    GROUP BY f.seller_id, DATE_TRUNC('month', f.date)::DATE
+        seller_id,
+        DATE_TRUNC('month', date)::DATE   AS forecast_month,
+        SUM(forecasted_orders)            AS forecasted_orders
+    FROM core.forecast.official_forecast_temp
+    GROUP BY seller_id, DATE_TRUNC('month', date)::DATE
 )
 
 SELECT

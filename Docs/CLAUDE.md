@@ -408,7 +408,7 @@ total_revenue =
 | 2026-04-09 | Items reservation date: staging.orbita.sell_order_log WHERE sell_order_state_id = 2, MIN(action_date) |
 | 2026-04-09 | lifecycle_month: M1 = mes de entrada (DATEDIFF month + 1) |
 | 2026-04-09 | Queries 01 y 02 validadas end-to-end (D3 OK, D4 OK) |
-| 2026-04-09 | Forecast: core.forecast.official_forecast_temp — usar MAX(version_id), truncar date a mes |
+| 2026-04-09 | Forecast: core.forecast.official_forecast_temp — truncar date a mes. NO filtrar por version_id (la tabla ya refleja el forecast oficial; version_id es control interno) |
 | 2026-04-09 | Forecast: cohort_month de dim_seller (no del forecast) — ajustes administrativos de cohorte aplican solos |
 | 2026-04-09 | Forecast: 11 meses de horizonte (Feb–Dic 2026), ya filtrado por bodega Melonn |
 | 2026-04-09 | Query 03 validada (D5 OK) |
