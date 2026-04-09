@@ -209,7 +209,7 @@ def load_revenue(filters: dict | None = None) -> pd.DataFrame:
 def load_forecast(filters: dict | None = None) -> pd.DataFrame:
     """
     Carga el forecast de órdenes por seller × mes desde core.forecast.official_forecast_temp.
-    Usa siempre la versión más reciente (MAX(version_id)).
+    La tabla ya expone el forecast oficial vigente — no se filtra por version_id.
     Cubre hasta Dic 2026.
 
     Filtros aplicados: country_id, segments (vía params CTE).
