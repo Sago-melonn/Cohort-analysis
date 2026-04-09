@@ -1,10 +1,11 @@
 """
 Carga de datos desde Redshift con caché por combinación de filtros.
 
-Expone tres funciones públicas:
-  load_orders(filters)   → DataFrame seller × order_month × lifecycle_month × order_count
-  load_revenue(filters)  → DataFrame seller × revenue_month × lifecycle_month × total_revenue
-  load_forecast(filters) → DataFrame seller × forecast_month × lifecycle_month × forecasted_orders
+Expone cuatro funciones públicas:
+  load_orders(filters)      → DataFrame seller × order_month × lifecycle_month × order_count
+  load_revenue(filters)     → DataFrame seller × revenue_month × lifecycle_month × total_revenue
+  load_forecast(filters)    → DataFrame seller × forecast_month × lifecycle_month × forecasted_orders
+  load_last_order_month()   → date | None — último mes con órdenes reales (para landing)
 
 Filtros válidos (dict):
   segments           : list[str]  – default ['Starter','Plus','Top','Enterprise']
@@ -32,6 +33,7 @@ _TTL = int(os.environ.get("CACHE_TTL_SECONDS", 1800))  # 30 min default
 _orders_cache: TTLCache = TTLCache(maxsize=50, ttl=_TTL)
 _revenue_cache: TTLCache = TTLCache(maxsize=50, ttl=_TTL)
 _forecast_cache: TTLCache = TTLCache(maxsize=50, ttl=_TTL)
+_status_cache: TTLCache = TTLCache(maxsize=4, ttl=3600)   # 1 h — para landing
 _lock = threading.Lock()
 
 # ── Defaults ────────────────────────────────────────────────────────────────
@@ -274,9 +276,56 @@ def load_forecast(filters: dict | None = None) -> pd.DataFrame:
     return df
 
 
+def load_last_order_month() -> "date | None":
+    """
+    Retorna el último mes calendario con órdenes reales en Redshift.
+    Usa la misma fuente que 01_inputs_orders.sql (staging.orbita.sell_order_log
+    con sell_order_state_id = 2 y bodega operada por Melonn).
+
+    Resultado cacheado 1 hora — ideal para la landing page.
+    """
+    from datetime import date as _date  # evitar shadowing del módulo
+
+    key = "last_order_month"
+    with _lock:
+        if key in _status_cache:
+            return _status_cache[key]
+
+    sql = """
+    SELECT MAX(
+        DATE_TRUNC('month',
+            CONVERT_TIMEZONE('UTC', w.timezone_code, iri.date)
+        )::DATE
+    ) AS last_month
+    FROM staging.orbita.sell_order AS so
+    INNER JOIN staging.orbita.warehouse AS w
+        ON so.assigned_warehouse_id = w.id
+    INNER JOIN (
+        SELECT sell_order_id, MIN(action_date) AS date
+        FROM staging.orbita.sell_order_log
+        WHERE sell_order_state_id = 2
+        GROUP BY sell_order_id
+    ) AS iri
+        ON so.id = iri.sell_order_id
+    WHERE w.operated_by_melonn = 1
+      AND iri.date IS NOT NULL
+    """
+
+    df = _run_query(sql)
+    result = None
+    if not df.empty and df.iloc[0, 0] is not None:
+        result = pd.to_datetime(df.iloc[0, 0]).date()
+
+    with _lock:
+        _status_cache[key] = result
+
+    return result
+
+
 def clear_cache() -> None:
     """Limpia todas las cachés manualmente (útil para testing)."""
     with _lock:
         _orders_cache.clear()
         _revenue_cache.clear()
         _forecast_cache.clear()
+        _status_cache.clear()
