@@ -1,0 +1,452 @@
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { 
+  Upload, 
+  Database, 
+  TrendingUp, 
+  Calculator, 
+  Layout, 
+  BarChart3, 
+  Filter, 
+  AlertCircle, 
+  DollarSign, 
+  Percent,
+  Cloud
+} from 'lucide-react';
+
+// Configuración de Firebase proporcionada por el entorno
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'melonn-cohort-analyzer';
+
+const App = () => {
+  const [rawData, setRawData] = useState({ col: [], mex: [] });
+  const [loading, setLoading] = useState(false);
+  const [user, setUser] = useState(null);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [selectedCountry, setSelectedCountry] = useState('CONSOLIDADO');
+  const [selectedSegments, setSelectedSegments] = useState(['Starter', 'Plus', 'Top', 'Enterprise']);
+  const [includeChurn, setIncludeChurn] = useState(true);
+  const [activeTab, setActiveTab] = useState('Inputs');
+  const [hoveredPoint, setHoveredPoint] = useState(null);
+  const [hoveredNDRPoint, setHoveredNDRPoint] = useState(null);
+
+  const topScrollRefGen = useRef(null);
+  const tableScrollRefGen = useRef(null);
+  const topScrollRefNDR1 = useRef(null);
+  const tableScrollRefNDR1 = useRef(null);
+
+  const LOGO_URL = "https://i.postimg.cc/bNP45qQ2/MELONN-LOGO-Oscuro.png";
+
+  // 1. Manejo de Autenticación
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Error de autenticación:", err);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Carga de datos desde Firestore
+  useEffect(() => {
+    if (!user) return;
+
+    const dataDoc = doc(db, 'artifacts', appId, 'public', 'data', 'cohortData');
+    const unsubscribe = onSnapshot(dataDoc, (docSnap) => {
+      if (docSnap.exists()) {
+        setRawData(docSnap.data());
+      }
+    }, (err) => {
+      console.error("Error leyendo de Firestore:", err);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Librería XLSX
+  useEffect(() => {
+    if (!window.XLSX) {
+      const script = document.createElement('script');
+      script.src = "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+      document.head.appendChild(script);
+    }
+  }, []);
+
+  const syncScroll = (source, target) => {
+    if (source.current && target.current) {
+      target.current.scrollLeft = source.current.scrollLeft;
+    }
+  };
+
+  const formatNumber = (val) => {
+    if (val === 0 || !val) return "-";
+    return Math.round(val).toLocaleString('en-US');
+  };
+
+  const formatPercent = (val) => {
+    if (val === undefined || val === null || isNaN(val)) return "-";
+    return (val * 100).toFixed(1) + "%";
+  };
+
+  const normalizeDateValue = (val) => {
+    if (!val) return null;
+    if (typeof val === 'number') {
+      const date = new Date(Math.round((val - 25569) * 864e5));
+      if (!isNaN(date)) return date.toISOString().split('T')[0];
+    }
+    const s = val.toString().trim();
+    const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.split(' ')[0];
+    return s;
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setLoading(true);
+    setErrorMsg(null);
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const bstr = evt.target.result;
+        const wb = window.XLSX.read(bstr, { type: 'binary' });
+        
+        const processSheet = (name) => {
+          const actualName = wb.SheetNames.find(s => s.toUpperCase() === name);
+          if (!actualName) return [];
+          const sheet = wb.Sheets[actualName];
+          const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1 });
+          if (rows.length < 1) return [];
+          const headers = rows[0].map(h => normalizeDateValue(h));
+          return rows.slice(1).map(row => {
+            const obj = {};
+            headers.forEach((header, i) => {
+              if (!header) return;
+              const val = row[i];
+              if (header === "Cohorte") obj.Cohorte = normalizeDateValue(val);
+              else if (header === "Segment") obj.Segment = val;
+              else if (header === "Churn_flag") obj.Churn_flag = val;
+              else if (/^\d{4}-\d{2}-\d{2}/.test(header)) obj[header] = parseFloat(val) || 0;
+            });
+            return obj;
+          });
+        };
+
+        const newData = { col: processSheet('COL'), mex: processSheet('MEX') };
+        
+        // Guardar en Firestore para que todos lo vean
+        if (user) {
+          const dataDoc = doc(db, 'artifacts', appId, 'public', 'data', 'cohortData');
+          await setDoc(dataDoc, newData);
+        } else {
+          setRawData(newData);
+        }
+
+      } catch (error) { 
+        setErrorMsg("Error al procesar el archivo. Revisa el formato.");
+      } finally { 
+        setLoading(false); 
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const toggleSegment = (seg) => {
+    setSelectedSegments(prev => 
+      prev.includes(seg) ? prev.filter(s => s !== seg) : [...prev, seg]
+    );
+  };
+
+  const { 
+    matrix, 
+    calendarMonths, 
+    subtotals, 
+    norData, 
+    retentionMatrix, 
+    maxLifecycleMonth,
+    averagesNDR 
+  } = useMemo(() => {
+    let data = [];
+    if (selectedCountry === 'COL' || selectedCountry === 'CONSOLIDADO') data = [...data, ...rawData.col];
+    if (selectedCountry === 'MEX' || selectedCountry === 'CONSOLIDADO') data = [...data, ...rawData.mex];
+
+    if (!data.length) return { matrix: [], calendarMonths: [], subtotals: {}, norData: [], retentionMatrix: [], maxLifecycleMonth: 0, averagesNDR: { simple: {}, weighted: {} } };
+
+    const filtered = data.filter(row => {
+      const segOk = selectedSegments.includes(row.Segment);
+      const churnOk = includeChurn ? true : Number(row.Churn_flag) === 0;
+      return segOk && churnOk;
+    });
+
+    const monthsSet = new Set();
+    filtered.forEach(row => {
+      Object.keys(row).forEach(k => { if (/^\d{4}-\d{2}-\d{2}/.test(k)) monthsSet.add(k); });
+    });
+    const months = Array.from(monthsSet).sort();
+
+    const groups = {};
+    filtered.forEach(row => {
+      const c = row.Cohorte;
+      if (!c || !groups[c]) groups[c] = { name: c, count: 0, values: {} };
+      groups[c].count += 1;
+      months.forEach(m => { groups[c].values[m] = (groups[c].values[m] || 0) + (row[m] || 0); });
+    });
+
+    let inputMatrix = Object.values(groups).sort((a, b) => a.name.localeCompare(b.name));
+
+    const smoothedMatrix = inputMatrix.map(cohort => {
+      const smoothedValues = {};
+      months.forEach((m, idx) => {
+        if (new Date(m) < new Date(cohort.name)) {
+          smoothedValues[m] = 0;
+          return;
+        }
+        const periodValues = [idx - 2, idx - 1, idx]
+          .map(i => i >= 0 ? cohort.values[months[i]] : 0)
+          .filter(v => v > 0);
+        smoothedValues[m] = periodValues.length > 0 ? periodValues.reduce((a, b) => a + b, 0) / periodValues.length : 0;
+      });
+      return { ...cohort, values: smoothedValues };
+    });
+
+    const nor = months.map((currentMonth, idx) => {
+      const dateT = new Date(currentMonth + "T00:00:00");
+      const dateT12 = new Date(dateT);
+      dateT12.setFullYear(dateT12.getFullYear() - 1);
+      const strT12 = dateT12.toISOString().split('T')[0];
+      const strT13 = new Date(new Date(dateT).setMonth(dateT.getMonth() - 13)).toISOString().split('T')[0];
+      if (!months.includes(strT12)) return { month: currentMonth, num: 0, den: 0, ratio: 0 };
+      const num = smoothedMatrix.reduce((acc, c) => (new Date(c.name) <= new Date(strT13)) ? acc + (c.values[currentMonth] || 0) : acc, 0);
+      const den = smoothedMatrix.reduce((acc, c) => (new Date(c.name) <= new Date(strT12)) ? acc + (c.values[strT12] || 0) : acc, 0);
+      return { month: currentMonth, num, den, ratio: den > 0 ? num / den : 0 };
+    }).filter(d => d.den > 0);
+
+    let maxLifecycle = 0;
+    const retention = inputMatrix.map(cohort => {
+      const cohortBirthDate = new Date(cohort.name + "T00:00:00");
+      const retValues = {};
+      const den = cohort.values[cohort.name] || 1;
+      months.forEach(m => {
+        const currentMonthDate = new Date(m + "T00:00:00");
+        if (currentMonthDate >= cohortBirthDate) {
+          const diffMonths = (currentMonthDate.getFullYear() - cohortBirthDate.getFullYear()) * 12 + (currentMonthDate.getMonth() - cohortBirthDate.getMonth());
+          retValues[diffMonths] = (cohort.values[m] || 0) / den;
+          if (diffMonths > maxLifecycle) maxLifecycle = diffMonths;
+        }
+      });
+      return { name: cohort.name, count: cohort.count, retentionValues: retValues, weight: den };
+    });
+
+    const simpleAvg = {};
+    const weightedAvg = {};
+    for (let i = 0; i <= maxLifecycle; i++) {
+      const valid = retention.filter(r => r.retentionValues[i] !== undefined);
+      if (valid.length > 0) {
+        simpleAvg[i] = valid.reduce((acc, r) => acc + r.retentionValues[i], 0) / valid.length;
+        const totalW = valid.reduce((acc, r) => acc + r.weight, 0);
+        weightedAvg[i] = valid.reduce((acc, r) => acc + (r.retentionValues[i] * r.weight), 0) / totalW;
+      }
+    }
+
+    const finalMatrix = activeTab === 'NOR' ? smoothedMatrix : inputMatrix;
+    const monthlyTotals = {};
+    months.forEach(m => {
+      monthlyTotals[m] = finalMatrix.reduce((acc, cohort) => acc + (cohort.values[m] || 0), 0);
+    });
+
+    return { 
+      matrix: finalMatrix, 
+      calendarMonths: months, 
+      subtotals: monthlyTotals, 
+      norData: nor, 
+      retentionMatrix: retention,
+      maxLifecycleMonth: maxLifecycle,
+      averagesNDR: { simple: simpleAvg, weighted: weightedAvg }
+    };
+  }, [rawData, selectedCountry, selectedSegments, includeChurn, activeTab]);
+
+  const getHeatmapColor = (val) => {
+    if (val === undefined || val === null) return 'transparent';
+    if (val >= 1) return 'rgba(0, 201, 122, 0.2)';
+    if (val >= 0.8) return 'rgba(0, 201, 122, 0.15)';
+    return 'rgba(72, 39, 190, 0.05)';
+  };
+
+  return (
+    <div className="min-h-screen bg-[#F4F7FE] font-sans text-[#1A1659]">
+      <header className="bg-[#1A1659] p-6 shadow-xl text-white flex justify-between items-center sticky top-0 z-50">
+        <div className="flex items-center gap-4">
+          <img src={LOGO_URL} alt="Melonn" className="h-7 bg-white px-2 py-1 rounded" />
+          <h1 className="text-xl font-bold border-l pl-4 border-white/20 uppercase">Analizador de Cohortes</h1>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="hidden md:flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-lg border border-white/10">
+            <Cloud size={14} className={rawData.col.length > 0 ? "text-[#00C97A]" : "text-white/30"} />
+            <span className="text-[10px] font-bold uppercase">{rawData.col.length > 0 ? "Datos Sincronizados" : "Sin Datos en Nube"}</span>
+          </div>
+          <label className="bg-[#00C97A] hover:bg-[#00a866] px-6 py-2 rounded-xl font-bold cursor-pointer transition-all shadow-lg text-sm flex items-center gap-2">
+            <Upload size={18} />
+            {loading ? "PROCESANDO..." : "CARGAR NUEVOS DATOS"}
+            <input type="file" className="hidden" onChange={handleFileUpload} accept=".xlsx, .xls" />
+          </label>
+        </div>
+      </header>
+
+      <main className="p-6 max-w-[1600px] mx-auto space-y-6">
+        
+        {/* Filtros Globales */}
+        <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col gap-6">
+          <div className="flex flex-col md:flex-row gap-6 justify-between items-start md:items-center">
+            <div className="flex gap-2 p-1 bg-gray-200/50 rounded-2xl border border-gray-200">
+                <button onClick={() => setActiveTab('Inputs')} className={`px-5 py-2 rounded-xl text-[10px] font-black transition-all flex items-center gap-2 ${activeTab === 'Inputs' ? 'bg-white text-[#4827BE] shadow-sm' : 'text-gray-500 hover:bg-gray-100'}`}><Database size={13} /> INPUTS REALES</button>
+                <button onClick={() => setActiveTab('NOR')} className={`px-5 py-2 rounded-xl text-[10px] font-black transition-all flex items-center gap-2 ${activeTab === 'NOR' ? 'bg-[#4827BE] text-white shadow-lg' : 'text-gray-500 hover:bg-gray-100'}`}><TrendingUp size={13} /> NOR</button>
+                <button onClick={() => setActiveTab('NDR')} className={`px-5 py-2 rounded-xl text-[10px] font-black transition-all flex items-center gap-2 ${activeTab === 'NDR' ? 'bg-[#00C97A] text-white shadow-lg' : 'text-gray-500 hover:bg-gray-100'}`}><DollarSign size={13} /> NDR</button>
+            </div>
+
+            <div className="flex flex-wrap gap-4 items-center">
+                <div className="flex bg-gray-100 p-1 rounded-xl text-[10px]">
+                  {['COL', 'MEX', 'CONSOLIDADO'].map(c => (
+                    <button key={c} onClick={() => setSelectedCountry(c)} className={`px-4 py-1.5 rounded-lg font-bold transition-all ${selectedCountry === c ? 'bg-[#1A1659] text-white' : 'text-gray-400 hover:text-gray-600'}`}>{c}</button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 bg-gray-50 px-4 py-2 rounded-xl border border-gray-200">
+                  <span className="text-[10px] font-bold text-gray-400 uppercase">Incluir Churn</span>
+                  <button onClick={() => setIncludeChurn(!includeChurn)} className={`w-10 h-5 rounded-full relative transition-colors ${includeChurn ? 'bg-[#00C97A]' : 'bg-gray-300'}`}><div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${includeChurn ? 'left-6' : 'left-1'}`} /></button>
+                </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3 items-center border-t pt-4">
+            <span className="text-[10px] font-black text-gray-400 uppercase flex items-center gap-2"><Filter size={12}/> Segmentos:</span>
+            {['Starter', 'Plus', 'Top', 'Enterprise'].map(seg => (
+              <button key={seg} onClick={() => toggleSegment(seg)} className={`px-4 py-1.5 rounded-full text-[10px] font-bold border transition-all ${selectedSegments.includes(seg) ? 'bg-[#4827BE]/10 border-[#4827BE] text-[#4827BE]' : 'bg-white border-gray-200 text-gray-400 hover:border-gray-300'}`}>{seg}</button>
+            ))}
+          </div>
+        </div>
+
+        {activeTab === 'NDR' && (
+          <div className="space-y-8">
+            <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100 relative">
+              <h3 className="text-xl font-bold flex items-center gap-2 text-[#1A1659] mb-8">
+                <TrendingUp className="text-[#00C97A]" size={22} /> NDR %: Curva de Retención Promedio
+              </h3>
+              
+              <div className="h-[300px] w-full px-12 relative">
+                <svg className="w-full h-full overflow-visible">
+                  {[0, 0.5, 1, 1.5, 2].map((g, i) => (
+                    <g key={i}>
+                      <line x1="0" y1={300 - (g * 100)} x2="100%" y2={300 - (g * 100)} stroke="#F2F2F2" strokeDasharray="4" />
+                      <text x="-40" y={305 - (g * 100)} className="text-[10px] fill-gray-400 font-bold">{g*100}%</text>
+                    </g>
+                  ))}
+                  
+                  {/* Marcadores Verdes para Mes 13 y 25 */}
+                  {[13, 25].map(m => {
+                    const val = averagesNDR.weighted[m];
+                    if (!val) return null;
+                    const x = `${(m / maxLifecycleMonth) * 100}%`;
+                    const y = 300 - (val * 100);
+                    return (
+                        <g key={m}>
+                            <line x1={x} y1="0" x2={x} y2="300" stroke="#00C97A" strokeWidth="1" strokeDasharray="3" />
+                            <rect x={`${(m / maxLifecycleMonth) * 100 - 2.5}%`} y={y - 25} width="40" height="18" rx="4" fill="#00C97A" />
+                            <text x={`${(m / maxLifecycleMonth) * 100}%`} y={y - 13} className="text-[10px] fill-white font-black" textAnchor="middle">{formatPercent(val)}</text>
+                        </g>
+                    )
+                  })}
+
+                  {/* Línea Simple */}
+                  <path
+                    d={`M ${Object.keys(averagesNDR.simple).map(m => `${(m / maxLifecycleMonth) * 100}%,${300 - (averagesNDR.simple[m] * 100)}`).join(' L ')}`}
+                    fill="none" stroke="#1A1659" strokeWidth="2" strokeOpacity="0.3"
+                  />
+                  {/* Línea Ponderada */}
+                  <path
+                    d={`M ${Object.keys(averagesNDR.weighted).map(m => `${(m / maxLifecycleMonth) * 100}%,${300 - (averagesNDR.weighted[m] * 100)}`).join(' L ')}`}
+                    fill="none" stroke="#4827BE" strokeWidth="4" strokeLinecap="round"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="p-6 border-b flex items-center justify-between">
+                  <h2 className="font-bold text-lg uppercase flex items-center gap-2"><Percent size={18} className="text-[#00C97A]" /> NDR % por Cohorte</h2>
+                </div>
+                <div className="overflow-x-auto">
+                    <table className="w-full text-[11px] border-collapse">
+                      <thead className="bg-[#1A1659] text-white">
+                        <tr>
+                          <th className="p-4 text-left sticky left-0 z-20 bg-[#1A1659] w-[180px]">COHORTE</th>
+                          {Array.from({ length: maxLifecycleMonth + 1 }).map((_, i) => (
+                            <th key={i} className={`p-4 text-center border-r border-white/5 w-[80px] ${[13, 25].includes(i) ? 'bg-[#00C97A]' : ''}`}>M{i}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {retentionMatrix.map((row, idx) => (
+                          <tr key={idx} className="border-b hover:bg-gray-50">
+                            <td className="p-4 font-bold sticky left-0 z-10 bg-white border-r">{row.name}</td>
+                            {Array.from({ length: maxLifecycleMonth + 1 }).map((_, i) => (
+                              <td key={i} style={{ backgroundColor: getHeatmapColor(row.retentionValues[i]) }} className="p-4 text-center border-r border-gray-50 font-medium">
+                                {formatPercent(row.retentionValues[i])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tablas Calendario para Inputs y NOR */}
+        {activeTab !== 'NDR' && (
+          <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
+             <div className="p-6 border-b font-bold uppercase text-lg">{activeTab === 'Inputs' ? 'Datos Reales de Facturación' : 'Volumen Suavizado'}</div>
+             <div className="overflow-x-auto">
+                <table className="w-full text-[11px] border-collapse">
+                  <thead className="bg-[#1A1659] text-white">
+                    <tr>
+                      <th className="p-4 text-left sticky left-0 z-20 bg-[#1A1659] w-[180px]">COHORTE</th>
+                      {calendarMonths.map(m => <th key={m} className="p-4 text-center border-r border-white/5 w-[100px]">{m}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {matrix.map((row, idx) => (
+                      <tr key={idx} className="border-b">
+                        <td className="p-4 font-bold sticky left-0 z-10 bg-white border-r">{row.name}</td>
+                        {calendarMonths.map(m => (
+                          <td key={m} className="p-4 text-center border-r border-gray-50 text-gray-500">
+                            {formatNumber(row.values[m])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+             </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+};
+
+export default App;

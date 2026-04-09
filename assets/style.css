@@ -1,0 +1,434 @@
+/* ============================================================
+   Cohort Analysis v2 — Identidad Visual Melonn
+   Paleta, tipografía y componentes heredados del SG&A Control
+   ============================================================ */
+
+/* ── Variables ─────────────────────────────────────────────── */
+:root {
+  --page-bg:       #F8F7FF;
+  --sidebar-bg:    #FFFFFF;
+  --sidebar-hdr:   #1A1659;
+  --primary:       #4827BE;
+  --deep-blue:     #1A1659;
+  --soft-lilac:    #9684E1;
+  --verde:         #00C97A;
+  --naranja:       #FF820F;
+  --muted:         #6B6B9A;
+  --card-bg:       #FFFFFF;
+  --card-border:   #EDE9F8;
+  --light-lilac:   #F0EDFC;
+
+  --sidebar-w:     240px;
+  --radius-card:   12px;
+  --shadow-card:   0 2px 16px rgba(72, 39, 190, 0.08);
+  --font:          'Poppins', sans-serif;
+}
+
+/* ── Reset / base ───────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font);
+  background: var(--page-bg);
+  color: var(--deep-blue);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { text-decoration: none; color: inherit; }
+
+/* ── Shell ──────────────────────────────────────────────────── */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────── */
+.sidebar {
+  position: fixed;
+  top: 0; left: 0;
+  width: var(--sidebar-w);
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--card-border);
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+  scrollbar-width: thin;
+  scrollbar-color: var(--card-border) transparent;
+}
+
+/* Logo header */
+.sidebar-header {
+  background: var(--sidebar-hdr);
+  padding: 20px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sidebar-logo {
+  height: 28px;
+  object-fit: contain;
+}
+
+/* Nav items */
+.sidebar-nav {
+  padding: 12px 0;
+  flex-shrink: 0;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  border-left: 3px solid transparent;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.nav-item:hover {
+  background: var(--light-lilac);
+  color: var(--primary);
+}
+
+.nav-item.nav-active {
+  background: var(--light-lilac);
+  color: var(--primary);
+  border-left-color: var(--primary);
+}
+
+.nav-icon {
+  font-size: 16px;
+  width: 20px;
+  text-align: center;
+}
+
+.nav-label { font-weight: 600; }
+
+/* Separador */
+.sidebar-sep {
+  border: none;
+  border-top: 1px solid var(--card-border);
+  margin: 4px 0;
+  flex-shrink: 0;
+}
+
+/* Filtros */
+.sidebar-filters {
+  padding: 12px 16px 24px;
+  flex: 1;
+}
+
+.filter-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  margin-top: 4px;
+}
+
+.filter-hr {
+  border: none;
+  border-top: 1px solid var(--card-border);
+  margin: 10px 0;
+}
+
+/* Radio / Checklist */
+.filter-radio,
+.filter-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.filter-radio-label,
+.filter-check-label {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--deep-blue);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+/* Inputs numéricos y de texto */
+.filter-input-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.filter-input-text,
+.filter-input-number {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--deep-blue);
+  background: var(--page-bg);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.filter-input-text:focus,
+.filter-input-number:focus {
+  border-color: var(--soft-lilac);
+}
+
+.filter-hint {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+/* FX */
+.filter-fx-block { display: flex; flex-direction: column; gap: 6px; }
+.filter-fx-row   { display: flex; align-items: center; gap: 6px; }
+.filter-fx-label { font-size: 11px; font-weight: 600; color: var(--muted); min-width: 52px; }
+.filter-fx-row .filter-input-number { max-width: 80px; }
+
+/* ── Content area ────────────────────────────────────────────── */
+.page-content {
+  margin-left: var(--sidebar-w);
+  flex: 1;
+  padding: 28px 32px;
+  min-height: 100vh;
+}
+
+/* ── Page ───────────────────────────────────────────────────── */
+.page { display: flex; flex-direction: column; gap: 20px; }
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 4px;
+}
+
+.page-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--deep-blue);
+  line-height: 1.2;
+}
+
+.page-subtitle {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 4px;
+  font-weight: 400;
+}
+
+.page-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.section-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--deep-blue);
+  margin-bottom: 14px;
+}
+
+.page-section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+/* ── Cards ──────────────────────────────────────────────────── */
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 20px 24px;
+}
+
+.page-section { }
+
+/* ── KPI strip ──────────────────────────────────────────────── */
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.kpi-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 16px 18px;
+}
+
+.kpi-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.kpi-value {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.kpi-value--primary { color: var(--primary); }
+.kpi-value--verde   { color: var(--verde);   }
+.kpi-value--naranja { color: var(--naranja); }
+.kpi-value--muted   { color: var(--muted);   }
+
+.kpi-subtitle {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+/* ── Metric radio (cabecera de página) ──────────────────────── */
+.metric-radio {
+  display: flex;
+  gap: 4px;
+  background: var(--light-lilac);
+  padding: 4px;
+  border-radius: 8px;
+}
+
+.metric-radio-label {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s;
+}
+
+/* Emula estado activo usando el input checked adjacent */
+.metric-radio-input { display: none; }
+
+/* ── Badges ─────────────────────────────────────────────────── */
+.section-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 20px;
+  letter-spacing: 0.04em;
+}
+
+.badge--verde {
+  background: rgba(0, 201, 122, 0.12);
+  color: var(--verde);
+  border: 1px solid rgba(0, 201, 122, 0.3);
+}
+
+/* ── Placeholder boxes ──────────────────────────────────────── */
+.placeholder-box {
+  background: var(--light-lilac);
+  border: 1.5px dashed var(--soft-lilac);
+  border-radius: 10px;
+  padding: 36px 24px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.placeholder-icon { font-size: 32px; color: var(--soft-lilac); }
+
+.placeholder-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.placeholder-text  { font-size: 12px; color: var(--deep-blue); }
+.placeholder-hint  { font-size: 11px; color: var(--muted); }
+
+.placeholder-content { padding: 24px; }
+
+/* ── NDR grid ───────────────────────────────────────────────── */
+.ndr-grid {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 20px;
+  align-items: start;
+}
+
+.ndr-left, .ndr-right { min-width: 0; }
+
+/* Promedios NDR */
+.ndr-averages-table  { font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.avg-row             { display: flex; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--card-border); }
+.avg-header-row      { font-weight: 700; color: var(--muted); font-size: 10px; text-transform: uppercase; }
+.avg-month           { width: 40px; font-weight: 700; color: var(--deep-blue); }
+.avg-simple          { flex: 1; color: var(--muted); }
+.avg-weighted        { flex: 1; color: var(--primary); font-weight: 600; }
+.avg-header          { }
+
+/* ── Scrollbar global ───────────────────────────────────────── */
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
+
+/* ── Heatmap (base — estilos completos en Fase 3) ───────────── */
+.cohort-table { border-collapse: collapse; font-size: 11px; width: 100%; }
+.cohort-table thead th {
+  background: var(--deep-blue);
+  color: #fff;
+  padding: 8px 10px;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.cohort-table thead th.milestone {
+  background: var(--verde);
+}
+
+.cohort-table tbody td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--card-border);
+  text-align: center;
+  font-size: 11px;
+  color: var(--deep-blue);
+}
+
+.cohort-table tbody td.sticky-col {
+  position: sticky;
+  left: 0;
+  background: var(--card-bg);
+  font-weight: 700;
+  border-right: 1px solid var(--card-border);
+  z-index: 2;
+}
+
+.table-wrap { overflow-x: auto; }

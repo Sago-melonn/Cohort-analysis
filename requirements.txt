@@ -1,0 +1,7 @@
+dash
+pandas
+plotly
+redshift-connector
+python-dotenv
+cachetools
+openpyxl
