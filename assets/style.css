@@ -40,15 +40,18 @@ a { text-decoration: none; color: inherit; }
 /* ── Shell ──────────────────────────────────────────────────── */
 .app-shell {
   display: flex;
+  flex-direction: row;
+  align-items: flex-start;
   min-height: 100vh;
 }
 
 /* ── Sidebar ────────────────────────────────────────────────── */
 .sidebar {
-  position: fixed;
-  top: 0; left: 0;
   width: var(--sidebar-w);
+  flex-shrink: 0;
   height: 100vh;
+  position: sticky;
+  top: 0;
   overflow-y: auto;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--card-border);
@@ -202,8 +205,8 @@ a { text-decoration: none; color: inherit; }
 
 /* ── Content area ────────────────────────────────────────────── */
 .page-content {
-  margin-left: var(--sidebar-w);
   flex: 1;
+  min-width: 0;
   padding: 28px 32px;
   min-height: 100vh;
 }
