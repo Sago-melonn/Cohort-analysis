@@ -382,7 +382,12 @@ total_revenue =
 | Query revenue (02) | ✅ Validada | UNION ALL: histórico + Redshift desde Ene 2024 |
 | Query forecast (03) | ✅ Validada | core.forecast.official_forecast_temp — Feb–Dic 2026 |
 | PRD completo | 🔴 Pendiente | |
-| App v2 (Dash + Redshift) | 🔴 Pendiente | |
+| App v2 — Landing page | ✅ Hecho | Logo, mes cerrado/parcial, botón "Entrar al Dashboard" |
+| App v2 — Scaffold (layout + sidebar + routing) | ✅ Hecho | Shell flex row, sidebar sticky, routing con PreventUpdate |
+| App v2 — Vista Inputs (heatmap + KPIs) | 🟡 En progreso | Código existe, pendiente conectar al run.py |
+| App v2 — Vista NOR/NRR | 🔴 Pendiente | Stub en cb_nor.py |
+| App v2 — Vista NDR/ODR | 🔴 Pendiente | Stub en cb_ndr.py |
+| App v2 — Vista NNR/NNO | 🔴 Pendiente | Stub en cb_nnr.py |
 | Deploy | 🔴 Pendiente | |
 
 ---
@@ -412,6 +417,15 @@ total_revenue =
 | 2026-04-09 | Forecast: cohort_month de dim_seller (no del forecast) — ajustes administrativos de cohorte aplican solos |
 | 2026-04-09 | Forecast: 11 meses de horizonte (Feb–Dic 2026), ya filtrado por bodega Melonn |
 | 2026-04-09 | Query 03 validada (D5 OK) |
+| 2026-04-09 | App v2 Fase 2 — scaffold completo: layout, sidebar, routing, 4 callbacks stub, data_loader, connection |
+| 2026-04-09 | App v2 Fase 3 — Vista Inputs implementada con datos reales: pivot cohorte × mes, agrupado por año con html.Details |
+| 2026-04-09 | data/transforms.py — funciones puras: build_filters, prepare_revenue, calc_nnr, calc_nno, pivot_cohort, quartile_styles |
+| 2026-04-09 | Tabla heatmap: secciones por año, 2025 y 2026 abiertas por defecto, resto colapsadas |
+| 2026-04-09 | Column IDs en DataTable usan guión bajo (YYYY_MM) para que filter_query no interprete el guión como resta |
+| 2026-04-09 | NaN → None: usar astype(object).where() antes de to_dict("records") para serialización JSON segura |
+| 2026-04-09 | dcc.Location debe ir FUERA del div.app-shell (flex container) — si está dentro, rompe el layout |
+| 2026-04-09 | Callback update_inputs solo corre en pathname == "/inputs" (no en landing "/") |
+| 2026-04-09 | Formato numérico en DataTable: usar {"specifier": ",.1f"} (dict) en lugar de dash_table.Format para máxima compatibilidad |
 
 ---
 
@@ -441,6 +455,20 @@ total_revenue =
 - Glosario oficial definido: NNR, NNO, NRR, NOR, NDR, ODR, Rolling Forecast
 - Corte pre/post 2025 confirmado. ODR = nombre interno para NDR en órdenes
 - Preguntas de negocio definidas (ver `Cohortes/research/preguntas_negocio.md`)
+
+### Sesión 2026-04-10
+- Bug crítico resuelto: `dash.Dash(__name__)` en `app/__init__.py` buscaba assets en `app/assets/` — corregido con `assets_folder` apuntando a la raíz del proyecto
+- Bug crítico resuelto: callbacks stub (cb_nor, cb_ndr, cb_nnr) usaban `raise Exception` en lugar de `raise PreventUpdate` — causaba errores en todas las navegaciones
+- Bug corregido: nav item "Inputs" en sidebar apuntaba a `/` en lugar de `/inputs`
+- Landing page verificada: logo Melonn, tarjeta "Consolidado" con mes cerrado/parcial, fondo lila
+- Scaffold completo verificado: sidebar sticky, routing funcional, navegación sin errores
+- Estrategia: construir hoja por hoja (landing ✅ → scaffold ✅ → inputs → NOR → NDR → NNR)
+- **Próximos pasos:**
+  - [ ] Vista Inputs — conectar cb_inputs.py al run.py
+  - [ ] Vista NOR/NRR — implementar
+  - [ ] Vista NDR/ODR — implementar
+  - [ ] Vista NNR/NNO — implementar
+  - [ ] Deploy
 
 ### Sesión 2026-04-09
 - Schemas Redshift confirmados: core.data_warehouse, core.experience, staging.orbita, staging.profitability, staging.finance

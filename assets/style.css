@@ -401,6 +401,61 @@ a { text-decoration: none; color: inherit; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
 
+/* ── Year-grouped cohort sections (Inputs) ──────────────────── */
+.cohort-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.year-section {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.year-summary {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--deep-blue);
+  padding: 13px 20px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: background 0.15s;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.year-summary:hover    { background: var(--light-lilac); }
+.year-summary::-webkit-details-marker { display: none; }
+
+/* Triángulo rotatorio */
+.year-summary::before {
+  content: "▶";
+  font-size: 10px;
+  color: var(--soft-lilac);
+  transition: transform 0.18s ease;
+  flex-shrink: 0;
+}
+
+details[open] > .year-summary::before { transform: rotate(90deg); }
+
+/* Etiqueta de unidad */
+.table-unit-row   { margin-bottom: 6px; }
+.table-unit-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--light-lilac);
+  padding: 3px 10px;
+  border-radius: 20px;
+}
+
 /* ── Heatmap (base — estilos completos en Fase 3) ───────────── */
 .cohort-table { border-collapse: collapse; font-size: 11px; width: 100%; }
 .cohort-table thead th {

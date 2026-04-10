@@ -27,11 +27,7 @@ def _status_card_consolidado(max_date: date | None) -> html.Div:
     header = html.Div(
         [
             html.Span("🌎", className="status-globe"),
-            html.Span(
-                f"Consolidado · {MESES_CORTO[max_date.month]} {max_date.year}"
-                if max_date else "Consolidado",
-                className="status-country-name",
-            ),
+            html.Span("Consolidado", className="status-country-name"),
         ],
         className="status-header",
     )

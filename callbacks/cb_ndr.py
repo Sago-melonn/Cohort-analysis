@@ -17,6 +17,7 @@ Fórmulas:
 Hitos clave: M13 y M25 — resaltados en verde #00C97A.
 """
 from dash import Input, Output, callback, dcc, html
+from dash.exceptions import PreventUpdate
 
 
 # ── Layout ───────────────────────────────────────────────────────────────────
@@ -161,7 +162,7 @@ def _kpi_row(m: int, simple: str, weighted: str) -> html.Div:
 )
 def update_ndr(pais, segmentos, churn, order_type, corte_base, metric, pathname):
     if pathname != "/ndr":
-        raise Exception("Callback ignorado — página no activa")
+        raise PreventUpdate
 
     # TODO Fase 3:
     #   1. filters = build_filters(pais, segmentos, churn, order_type)

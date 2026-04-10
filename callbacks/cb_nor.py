@@ -12,6 +12,7 @@ Fórmula NOR:
              / Σ Orders_smooth(cohortes edad > 12m, en mes_t − 12)
 """
 from dash import Input, Output, callback, dcc, html
+from dash.exceptions import PreventUpdate
 
 
 # ── Layout ───────────────────────────────────────────────────────────────────
@@ -111,7 +112,7 @@ def _kpi_card(title: str, value: str, subtitle: str, variant: str = "primary") -
 )
 def update_nor(pais, segmentos, churn, order_type, corte_base, pathname):
     if pathname != "/nor":
-        raise Exception("Callback ignorado — página no activa")
+        raise PreventUpdate
 
     # TODO Fase 3:
     #   1. filters = build_filters(pais, segmentos, churn, order_type)

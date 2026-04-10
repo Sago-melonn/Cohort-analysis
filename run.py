@@ -1,16 +1,17 @@
 """
 Entry point — Cohort Analysis v2
-Uso: python run.py
+Paso 2: Shell (sidebar + routing)
 """
-# 1. Crear instancia Dash
+# 1. Instancia Dash
 from app import dash_app          # noqa: F401
 
-# 2. Registrar layout (sidebar + dcc.Location + page-content)
+# 2. Layout: sidebar fijo + dcc.Location + área de contenido
 import app.layout                 # noqa: F401
 
-# 3. Registrar callbacks (orden importa: routing debe ir primero)
+# 3. Routing: URL → página activa + nav resaltado
 import callbacks.routing          # noqa: F401
-import callbacks.cb_inputs        # noqa: F401
+
+# 4. Callbacks stub (PreventUpdate si la página no está activa)
 import callbacks.cb_nor           # noqa: F401
 import callbacks.cb_ndr           # noqa: F401
 import callbacks.cb_nnr           # noqa: F401

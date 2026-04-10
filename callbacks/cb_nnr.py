@@ -12,6 +12,7 @@ Fase 2 — scaffold: layout completo, callback stub con placeholder.
 Fase 3 — implementar: calcular NNR/NNO por cohorte → bar chart con desglose segmento.
 """
 from dash import Input, Output, callback, dcc, html
+from dash.exceptions import PreventUpdate
 
 
 # ── Layout ───────────────────────────────────────────────────────────────────
@@ -136,7 +137,7 @@ def _kpi_card(title: str, value: str, subtitle: str, variant: str = "primary") -
 def update_nnr(pais, segmentos, churn, order_type, corte_base,
                fx_cop, fx_mxn, estacionalidad, metric, pathname):
     if pathname != "/nnr":
-        raise Exception("Callback ignorado — página no activa")
+        raise PreventUpdate
 
     # TODO Fase 3:
     #   1. filters = build_filters(pais, segmentos, churn, order_type)

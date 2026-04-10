@@ -23,7 +23,7 @@ from dash import dcc, html
 LOGO_URL = "https://i.postimg.cc/bNP45qQ2/MELONN-LOGO-Oscuro.png"
 
 _NAV_ITEMS = [
-    {"label": "Inputs",     "icon": "▦",  "href": "/",     "id": "nav-inputs"},
+    {"label": "Inputs",     "icon": "▦",  "href": "/inputs", "id": "nav-inputs"},
     {"label": "NOR / NRR",  "icon": "↗",  "href": "/nor",  "id": "nav-nor"},
     {"label": "NDR / ODR",  "icon": "◈",  "href": "/ndr",  "id": "nav-ndr"},
     {"label": "NNR / NNO",  "icon": "★",  "href": "/nnr",  "id": "nav-nnr"},

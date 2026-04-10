@@ -10,8 +10,12 @@ from components.sidebar import sidebar
 dash_app.layout = html.Div(
     [
         dcc.Location(id="url", refresh=False),
-        sidebar(),
-        html.Div(id="page-content", className="page-content"),
-    ],
-    className="app-shell",
+        html.Div(
+            [
+                sidebar(),
+                html.Div(id="page-content", className="page-content"),
+            ],
+            className="app-shell",
+        ),
+    ]
 )
