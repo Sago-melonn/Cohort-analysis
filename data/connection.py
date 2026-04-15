@@ -17,5 +17,6 @@ def get_connection() -> redshift_connector.Connection:
         port=int(os.environ.get("REDSHIFT_PORT", 5439)),
         user=os.environ["REDSHIFT_USER"],
         password=os.environ["REDSHIFT_PASSWORD"],
-        timeout=60,
+        timeout=300,
+        tcp_keepalive=True,
     )

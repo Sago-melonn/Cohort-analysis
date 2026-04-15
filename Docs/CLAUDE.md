@@ -149,15 +149,24 @@ NNO(seller) = avg( Orders(M2) + Orders(M3) )
 ### NRR — Net Revenue Retention
 **Qué es:** Crecimiento YoY del mismo grupo de clientes maduros (pre-2025).
 
+**Universo (dos modos, seleccionable en UI):**
+- **Base madura:** `cohort_month ≤ corte_base` (fijo, default Dic 2024)
+- **Todos:** `cohort_month < M-12` (dinámico — para Mar 2026 incluye cohortes hasta Feb 2025)
+- El mismo universo aplica a numerador y denominador de cada mes M.
+
 **Fórmula:**
 ```
-NRR(mes_t) = Σ Revenue(cohortes entrada ≤ mes_t - 12 meses, en mes_t)
-             / Σ Revenue(cohortes entrada ≤ mes_t - 13 meses, en mes_t - 12)
+1. raw(cohorte C, mes M)    = Σ display_value  de C en M
+2. smooth(cohorte C, mes M) = mean( raw(C, M-2..M) )   ← rolling 3 por cohorte, min_periods=1
+3. smooth_total(M)          = Σ smooth(C, M)  para C en universo(M)
+4. NRR(M) = smooth_total(M) / smooth_total(M-12)
 ```
-- Ejemplo para Dic 2025: num = revenue en Dic 2025 de cohortes que entraron ≤ Dic 2024; den = revenue en Dic 2024 de esas mismas cohortes
-- Resultado tipo 110% = clientes crecen YoY
+- Suavizado a nivel de cohorte (no de seller)
+- Sin forecast de revenue — la serie se corta en el último mes real
 
-**Aplica a:** Clientes **pre-2025** ("Base")
+**Resultado tipo 110%** = clientes crecen YoY
+
+**Aplica a:** Clientes **pre-2025** ("Base") o todos con ≥ 12 meses de vida
 
 **Nota:** NRR puede estar inflado por aumentos de precio, nuevos servicios cobrados, cambios de comportamiento. Por eso se complementa con NOR.
 
@@ -166,15 +175,23 @@ NRR(mes_t) = Σ Revenue(cohortes entrada ≤ mes_t - 12 meses, en mes_t)
 ### NOR — Net Order Retention
 **Qué es:** Igual que NRR pero en órdenes. Métrica preferida por ser más limpia.
 
-**Fórmula:**
-```
-NOR(mes_t) = Σ Orders_smooth(cohortes edad > 12m, en mes_t)
-             / Σ Orders_smooth(cohortes edad > 12m, en mes_t - 12)
-```
-- Aplica **suavizado de 3 períodos** antes del cálculo (promedio de los últimos 3 meses con valor > 0)
-- Solo cohortes con ≥13 meses de historia
+**Universo (dos modos, seleccionable en UI):**
+- **Base madura:** `cohort_month ≤ corte_base` (fijo, default Dic 2024)
+- **Todos:** `cohort_month < M-12` (dinámico — para Mar 2026 incluye cohortes hasta Feb 2025)
+- El mismo universo aplica a numerador y denominador de cada mes M.
 
-**Aplica a:** Clientes **pre-2025** ("Base")
+**Fórmula (implementada en `calc_retention_series`):**
+```
+1. raw(cohorte C, mes M)    = Σ order_count   de C en M
+2. smooth(cohorte C, mes M) = mean( raw(C, M-2..M) )   ← rolling 3 por cohorte, min_periods=1
+3. smooth_total(M)          = Σ smooth(C, M)  para C en universo(M)
+4. NOR(M) = smooth_total(M) / smooth_total(M-12)
+```
+- Suavizado a nivel de cohorte (no de seller); si hay menos de 3 meses usa los disponibles
+- Con toggle **Forecast (Sí/No)**: meses futuros usan `forecasted_orders` en lugar de `order_count`
+- Trazabilidad: tabla mes × (cohortes hasta | num | den | NOR | NRR)
+
+**Aplica a:** Clientes **pre-2025** ("Base") o todos con ≥ 12 meses de vida
 
 **Por qué es preferida:** No está distorsionada por precios ni nuevos servicios. Refleja el driver real del negocio.
 
@@ -295,7 +312,7 @@ La hoja tiene 3 bloques verticales:
 | `cohort` | Timestamp → `DATE_TRUNC('month')` = cohort_month |
 | `segment` | Filtro: Starter, Plus, Top, Enterprise (excluir Tiny) |
 | `country_id` | 1 = COL, 2 = MEX |
-| `churn_date` | `IS NOT NULL` → churn_flag = 1 |
+| `state` | `<> 'Active'` → churn_flag = 1 (v4: sellers que churnearon y volvieron tienen churn_date pero state='Active' — usar state) |
 
 ### Campos clave de staging.orbita.sell_order (fuente de órdenes)
 > ⚠️ NO usar `core.data_warehouse.fact_sell_order` para órdenes — solo tiene datos desde Ene 2023. Usar `staging.orbita.sell_order` que tiene historia completa desde Feb 2021.
@@ -384,9 +401,9 @@ total_revenue =
 | PRD completo | 🔴 Pendiente | |
 | App v2 — Landing page | ✅ Hecho | Logo, mes cerrado/parcial, botón "Entrar al Dashboard" |
 | App v2 — Scaffold (layout + sidebar + routing) | ✅ Hecho | Shell flex row, sidebar sticky, routing con PreventUpdate |
-| App v2 — Vista Inputs (heatmap + KPIs) | 🟡 En progreso | Código existe, pendiente conectar al run.py |
-| App v2 — Vista NOR/NRR | 🔴 Pendiente | Stub en cb_nor.py |
-| App v2 — Vista NDR/ODR | 🔴 Pendiente | Stub en cb_ndr.py |
+| App v2 — Vista Inputs (heatmap + KPIs) | ✅ Hecho | Tabla custom 2 niveles, drill-down inline, KPIs, sticky filter bar |
+| App v2 — Vista NOR/NRR | ✅ Hecho | KPIs + gráfico Plotly + trazabilidad + sección Churn (bar chart + tabla TOP10) — cb_nor.py |
+| App v2 — Vista NDR/ODR | ✅ Hecho | Gráfico curva promedio + tabla hitos + heatmap suavizado — cb_ndr.py |
 | App v2 — Vista NNR/NNO | 🔴 Pendiente | Stub en cb_nnr.py |
 | Deploy | 🔴 Pendiente | |
 
@@ -419,13 +436,47 @@ total_revenue =
 | 2026-04-09 | Query 03 validada (D5 OK) |
 | 2026-04-09 | App v2 Fase 2 — scaffold completo: layout, sidebar, routing, 4 callbacks stub, data_loader, connection |
 | 2026-04-09 | App v2 Fase 3 — Vista Inputs implementada con datos reales: pivot cohorte × mes, agrupado por año con html.Details |
-| 2026-04-09 | data/transforms.py — funciones puras: build_filters, prepare_revenue, calc_nnr, calc_nno, pivot_cohort, quartile_styles |
-| 2026-04-09 | Tabla heatmap: secciones por año, 2025 y 2026 abiertas por defecto, resto colapsadas |
-| 2026-04-09 | Column IDs en DataTable usan guión bajo (YYYY_MM) para que filter_query no interprete el guión como resta |
+| 2026-04-09 | data/transforms.py — funciones puras: build_filters, prepare_revenue, calc_nnr, calc_nno, pivot_cohort, pivot_cohort_by_year, quartile_styles, revenue_display_unit |
+| 2026-04-09 | Tabla heatmap: secciones por año, solo año actual abierto por defecto (date.today().year), resto colapsadas |
 | 2026-04-09 | NaN → None: usar astype(object).where() antes de to_dict("records") para serialización JSON segura |
 | 2026-04-09 | dcc.Location debe ir FUERA del div.app-shell (flex container) — si está dentro, rompe el layout |
 | 2026-04-09 | Callback update_inputs solo corre en pathname == "/inputs" (no en landing "/") |
-| 2026-04-09 | Formato numérico en DataTable: usar {"specifier": ",.1f"} (dict) en lugar de dash_table.Format para máxima compatibilidad |
+| 2026-04-11 | Vista Inputs rediseñada: tabla custom html.Div flex (NO DataTable) con 2 niveles — nivel 1: cohorte-año × meses + Total; nivel 2: click expande cohorte-mes inline |
+| 2026-04-11 | Heatmap coloreado con inline styles por cuartil (sin style_data_conditional de DataTable) |
+| 2026-04-11 | Query 01 v3: eliminado JOIN fulfillment_type y columna order_type — D2C+B2B consolidados en SQL. Filtro order_type eliminado del UI de Inputs |
+| 2026-04-11 | Unidades revenue: COL+local → MM COP (÷1M), MEX+local → K MXN (÷1K), USD/Consolidado → K USD |
+| 2026-04-11 | Números sin decimales en Inputs (fmt_spec ",.0f" para revenue y órdenes) |
+| 2026-04-11 | KPIs Inputs: NNR y NNO con tooltip hover (sin texto "avg M2+M3" visible); "Sellers activos" = churn_flag==0 con órdenes en último mes; eliminado KPI "Cohortes activas" |
+| 2026-04-11 | Filter bar de Inputs sticky (position: sticky, top: 0, z-index: 50) — queda fija al scrollear |
+| 2026-04-11 | Filtros Inputs alineados a la izquierda (justify-content: flex-start); Métrica en fila horizontal igual que País |
+| 2026-04-13 | NOR/NRR: suavizado 3 períodos a nivel de cohorte (no de seller), antes del ratio |
+| 2026-04-13 | NOR/NRR: universo seleccionable — "Base madura" (≤ corte_base fijo) o "Todos" (cohort_month < M-12 dinámico) |
+| 2026-04-13 | NOR/NRR: mismo universo para numerador y denominador de cada mes M |
+| 2026-04-13 | NOR: toggle Forecast (Sí/No) — extiende serie con forecasted_orders como línea punteada |
+| 2026-04-13 | NRR: sin forecast (no existe revenue proyectado), serie se corta en último mes real |
+| 2026-04-13 | calc_retention_series() en transforms.py — función genérica para NOR y NRR |
+| 2026-04-13 | nor_filters(): quitado toggle Métrica, agregados Universo y Forecast |
+| 2026-04-13 | Trazabilidad: tabla mes × cohortes_hasta × num × den × NOR × NRR en cb_nor.py |
+| 2026-04-13 | KPI variants: verde (≥100%), naranja (90–99%), muted (<90%) |
+| 2026-04-14 | NOR filtros reestructurados en dos bloques: Generales (País, Moneda, Segmento) y Adicionales (Métrica, Churn, Cohortes, Corte base, Forecast, Vista) |
+| 2026-04-14 | Segmento en NOR: pills (Checklist) siempre visibles, toggle on/off por pill, sincronizados con clientside_callback. Tiny incluido en Starter a nivel SQL (_SEGMENT_ALIASES en data_loader.py) |
+| 2026-04-14 | "Base madura" → "Base" en radio Cohortes; "Universo" → "Cohortes" como label |
+| 2026-04-14 | Corte base: reemplazado dcc.Input por dcc.DatePickerSingle (MMM YYYY, 2022–2026) |
+| 2026-04-14 | Gráfico NOR/NRR: etiquetas en negrilla (Arial Black), mensual (dtick=M1), padding 3 semanas en bordes, eje Y 50%–max(200%, data_max), hover con smooth_num + smooth_den + ratio |
+| 2026-04-14 | Forecast trace: color naranja #F97316 (distinto del morado #4827BE de actuals), línea punteada + etiquetas + hover completo |
+| 2026-04-14 | Conexión actuals↔forecast: traza "puente" invisible (hoverinfo=skip, showlegend=False) + traza forecast separada desde Abril. Evita duplicación de hover en el mes de corte |
+| 2026-04-14 | Toggle Vista (% Ratio / Absoluto): en Absoluto el gráfico muestra smooth_num (valor T del período) en lugar del ratio. Eje Y en unidades, sin línea 100%. Hover muestra T, T-12 y ratio calculado (customdata[2]) |
+| 2026-04-14 | Bug fix: df_orders y df_rev_p se filtran a <= last_closed ANTES de pasar a calc_retention_series. Evita que un mes parcial en curso (ej. Abril) sea last_actual y deje ese mes en el limbo (excluido de actuals y de forecast) |
+| 2026-04-14 | last_closed calculado una sola vez al inicio del callback (movido antes de las cargas de datos) |
+| 2026-04-15 | churn_flag: cambiado de churn_date IS NOT NULL a state <> 'Active' en queries 01 y 02 (v4). Sellers que churnearon y volvieron tenían churn_date pero state='Active' |
+| 2026-04-15 | Sección Churn en NOR/NRR: bar chart mensual desde Ene 2025 + tabla año→mes→TOP 10 sellers + Otros(N) agrupados. Aplica filtros País, Segmento, Métrica y Moneda/FX |
+| 2026-04-15 | Toggle Vista (% Ratio / Absoluto) movido de filtros Adicionales al interior del card del gráfico (top-right, position absolute). Solo aplica al gráfico |
+| 2026-04-15 | Título de la hoja NOR/NRR cambiado a "Net Revenue Retention / Net Order Retention"; navegación en sidebar sigue como "NRR/NOR" |
+| 2026-04-15 | Vista NDR/ODR implementada: suavizado forward 3 períodos, gráfico curva promedio (ponderado + aritmético), tabla hitos (M1/3/6/12/13/18/24/25), heatmap cohorte × lifecycle_month con colores cuartil |
+| 2026-04-15 | calc_cohort_matrix() en transforms.py: smooth(C,Mn) = mean(raw_Mn, raw_Mn+1, raw_Mn+2) usando meses disponibles. Weights = Σ raw(M1..M12) sin suavizar, para el promedio ponderado |
+| 2026-04-15 | NDR/ODR: universo = todos los cohortes históricos (sin filtro corte_base). Filtros activos: País, Moneda/FX, Segmentos pills, Churn, Métrica (ODR=órdenes / NDR=revenue) |
+| 2026-04-15 | NDR/ODR: heatmap reutiliza clases ct-* de Inputs. M13 y M25 con borde verde y header verde. Filas subtotales: Avg Aritmético (#E8E2F8) y Avg Ponderado (#4827BE) al pie del heatmap |
+| 2026-04-15 | ndr_filters() rediseñado: layout dos bloques (Generales/Adicionales) igual que NOR. Segmentos como pills con clientside_callback. Sin corte base |
 
 ---
 
@@ -448,6 +499,38 @@ total_revenue =
 ---
 
 ## 💬 NOTAS DE SESIÓN
+
+### Sesión 2026-04-14
+- Gráfico NOR/NRR mejorado: título más alto (margen t=90), etiquetas en negrilla, forecast en naranja (#F97316) con etiquetas y hover completo
+- Toggle **Vista: % Ratio / Absoluto** — en Absoluto muestra `smooth_num` (valor T de la base de cohortes por mes). El hover siempre muestra Órdenes (T), Órdenes (T-12) y el ratio % como contexto. Forecast también proyecta el absoluto.
+- Traza de forecast refactorizada en dos partes: "puente" invisible (solo línea, sin hover) + traza de datos desde el primer mes de forecast. Resuelve doble hover en mes de corte y ausencia de etiqueta en el primer mes forecast.
+- **Bug fix crítico:** `df_orders` y `df_rev_p` se cortan a `last_closed` antes de `calc_retention_series`. Antes, si había órdenes parciales del mes en curso (ej. Abril), ese mes quedaba en el limbo: excluido de actuals (`> last_closed`) y de forecast (`is_forecast=False`). Ahora `last_actual` dentro de la función siempre es el último mes cerrado.
+- Filtros NOR reorganizados: Generales (País, Moneda, Segmento-pills) + Adicionales (Métrica, Churn, Cohortes, Corte base, Forecast, **Vista**)
+- **Próximos pasos:**
+  - [ ] Vista NDR/ODR — implementar cb_ndr.py
+  - [ ] Vista NNR/NNO — implementar cb_nnr.py
+  - [ ] Warm-up agresivo de cache al arrancar (3 combinaciones país)
+  - [ ] Deploy
+
+### Sesión 2026-04-13
+- Metodología NOR/NRR alineada y documentada
+- `calc_retention_series()` implementada en `transforms.py` — genérica para NOR (order_count) y NRR (display_value)
+- `nor_filters()` actualizado: quitado toggle Métrica, agregados Universo (Base madura / Todos) y Forecast (No / Sí)
+- `cb_nor.py` implementado: KPIs con colores, gráfico Plotly (NOR violeta + NRR verde + forecast punteado), tabla trazabilidad
+- **Próximos pasos:**
+  - [ ] Velocidad: warm-up agresivo de las 3 combinaciones al arrancar
+  - [ ] Vista NDR/ODR — implementar cb_ndr.py
+  - [ ] Vista NNR/NNO — implementar cb_nnr.py
+  - [ ] Deploy
+
+### Sesión 2026-04-11
+- Vista Inputs completada y verificada con datos reales de Redshift
+- Tabla rediseñada: 2 niveles con html.Div flex (sin DataTable) — nivel 1 cohorte-año + Total, nivel 2 drill-down inline al hacer click
+- Query 01 simplificado (v3): eliminado JOIN fulfillment_type, D2C+B2B consolidados en SQL
+- Filtro order_type eliminado del UI de Inputs (reducción de 9 a 3 combinaciones de cache)
+- Unidades corregidas: MEX → K MXN (÷1,000), COL → MM COP (÷1,000,000)
+- KPIs: tooltip en NNR/NNO, "Sellers activos" reemplaza "Sellers únicos", eliminado "Cohortes activas"
+- Filter bar sticky; Métrica en fila horizontal; filtros alineados a la izquierda; solo año actual abierto por defecto
 
 ### Sesión 2026-04-08
 - Excel analizado: 12 hojas, datos Dic 2020 a Dic 2025, ~3.735 sellers Colombia

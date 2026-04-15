@@ -53,13 +53,13 @@ sellers AS (
         s.country_id,
         s.country_name,
         DATE_TRUNC('month', s.cohort)::DATE                        AS cohort_month,
-        CASE WHEN s.churn_date IS NOT NULL THEN 1 ELSE 0 END       AS churn_flag
+        CASE WHEN s.state <> 'Active' THEN 1 ELSE 0 END             AS churn_flag
     FROM core.data_warehouse.dim_seller s
     CROSS JOIN params p
     WHERE
         s.segment = ANY(p.segment_filter)
         AND (p.country_filter IS NULL OR s.country_id = p.country_filter)
-        AND (p.include_churn  OR s.churn_date IS NULL)
+        AND (p.include_churn  OR s.state = 'Active')
         AND s.cohort IS NOT NULL
 ),
 
@@ -466,9 +466,12 @@ revenue_historico AS (
         0::NUMERIC      AS adjecencies_revenue,
         0::NUMERIC      AS credit_notes_adjustment,
         h.total_revenue AS total_revenue
-    FROM staging.finance.financial_planning_historical_revenue h
+    FROM (
+        SELECT seller_id, date AS revenue_month, total_revenue, country_id
+        FROM staging.finance.financial_planning_historical_revenue
+    ) h
     CROSS JOIN params p
-    WHERE h.date < '2024-01-01'
+    WHERE h.revenue_month < '2024-01-01'
       AND (p.country_filter IS NULL OR h.country_id = p.country_filter)
 ),
 

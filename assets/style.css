@@ -75,6 +75,7 @@ a { text-decoration: none; color: inherit; }
 .sidebar-logo {
   height: 28px;
   object-fit: contain;
+  filter: brightness(0) invert(1);
 }
 
 /* Nav items */
@@ -456,6 +457,137 @@ details[open] > .year-summary::before { transform: rotate(90deg); }
   border-radius: 20px;
 }
 
+/* ── Custom cohort table (ct-*) ─────────────────────────────── */
+.ct-wrap {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--card-border) transparent;
+}
+
+.ct-table {
+  display: flex;
+  flex-direction: column;
+  min-width: max-content;
+  font-family: var(--font);
+}
+
+.ct-row {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  border-bottom: 1px solid #EDE9F8;
+}
+
+.ct-cell {
+  min-width: 90px;
+  width: 90px;
+  padding: 7px 10px;
+  font-size: 12px;
+  text-align: center;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ct-cell-first {
+  min-width: 145px;
+  width: 145px;
+  justify-content: flex-start !important;
+  font-weight: 700;
+  color: var(--deep-blue);
+  background: #FFFFFF;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  border-right: 2px solid #D4C9F5;
+  flex-shrink: 0;
+}
+
+/* Header */
+.ct-header-row {
+  background: #1A1659;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.ct-header-cell {
+  color: #FFFFFF !important;
+  font-weight: 700 !important;
+  font-size: 11px !important;
+  background: #1A1659 !important;
+  letter-spacing: 0.03em;
+}
+
+/* Summary (dispara el Details) */
+.ct-summary {
+  list-style: none;
+  display: block;
+  cursor: pointer;
+}
+.ct-summary::-webkit-details-marker { display: none; }
+.ct-summary:focus { outline: none; }
+
+/* Fila cohorte-año */
+.ct-year-row {
+  background: #FFFFFF;
+  transition: background 0.12s;
+}
+.ct-summary:hover .ct-year-row { background: var(--light-lilac); }
+
+.ct-year-label { color: var(--primary) !important; }
+
+/* Flecha giratoria en la primera celda */
+.ct-group > .ct-summary .ct-year-label::before {
+  content: "▶";
+  font-size: 8px;
+  color: var(--soft-lilac);
+  margin-right: 8px;
+  transition: transform 0.18s ease;
+  display: inline-block;
+}
+.ct-group[open] > .ct-summary .ct-year-label::before {
+  transform: rotate(90deg);
+}
+
+/* Fila sin drill-down: punto estático */
+.ct-group-nodrill .ct-year-label::before {
+  content: "·";
+  font-size: 14px;
+  color: var(--card-border);
+  margin-right: 8px;
+  line-height: 0;
+}
+
+/* Filas de detalle (cohorte-mes) */
+.ct-detail-body  { border-top: 1px dashed #D4C9F5; }
+.ct-detail-row   { background: #F8F6FE; }
+
+.ct-month-label {
+  padding-left: 30px !important;
+  font-weight: 500 !important;
+  color: var(--muted) !important;
+  font-size: 11px;
+  background: #F8F6FE !important;
+}
+.ct-detail-cell  { font-size: 11px; }
+
+/* Fila Total */
+.ct-total-row {
+  background: #1A1659;
+  border-top: 2px solid #9684E1;
+}
+.ct-total-label {
+  background: #1A1659 !important;
+  color: #FFFFFF !important;
+}
+.ct-total-cell {
+  color: #FFFFFF !important;
+  font-weight: 700;
+}
+
 /* ── Heatmap (base — estilos completos en Fase 3) ───────────── */
 .cohort-table { border-collapse: collapse; font-size: 11px; width: 100%; }
 .cohort-table thead th {
@@ -490,6 +622,355 @@ details[open] > .year-summary::before { transform: rotate(90deg); }
 }
 
 .table-wrap { overflow-x: auto; }
+
+/* ── Filter bar (nivel de página) ───────────────────────────── */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0;
+  padding: 7px 12px;
+  background: var(--card-bg);
+  border: 0.5px solid #D0CAEA;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  row-gap: 6px;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+/* Grupo: label + control en columna */
+.fb-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 10px;
+}
+
+/* Label superior 10–11px, minúscula */
+.fb-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  line-height: 1;
+  margin: 0;
+}
+
+/* Separador vertical fino */
+.fb-sep {
+  width: 0.5px;
+  height: 32px;
+  background: #D0CAEA;
+  align-self: center;
+  flex-shrink: 0;
+}
+
+/* ── Radio inline (fila) y columna ──────────────────────────── */
+.fb-radio {
+  display: flex;
+  flex-direction: row;
+  gap: 14px;
+  align-items: center;
+}
+
+/* Variante columna: métrica */
+.fb-radio--col {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.fb-radio-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--deep-blue);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  line-height: 1;
+  padding-left: 2px;
+}
+
+.fb-radio-input[type="radio"] {
+  accent-color: #534AB7;
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+/* ── Country flags (País radio) ─────────────────────────────── */
+.fb-flag {
+  height: 12px;
+  width: auto;
+  vertical-align: middle;
+  border-radius: 1px;
+  margin-right: 2px;
+  display: inline-block;
+}
+
+/* ── Select (Dropdown compacto) ─────────────────────────────── */
+/* Overrides para dcc.Dropdown con className="fb-select" */
+.fb-select .Select-control,
+.fb-select .VirtualizedSelectOption {
+  font-family: var(--font) !important;
+  font-size: 12px !important;
+}
+
+.fb-select .Select-control {
+  min-height: 28px !important;
+  height: 28px !important;
+  border: 0.5px solid #D0CAEA !important;
+  border-radius: 6px !important;
+  background: var(--page-bg) !important;
+  cursor: pointer !important;
+}
+
+.fb-select .Select-value,
+.fb-select .Select-placeholder {
+  line-height: 28px !important;
+  font-size: 12px !important;
+  color: var(--deep-blue) !important;
+  padding-left: 8px !important;
+  padding-right: 24px !important;
+}
+
+.fb-select .Select-arrow-zone {
+  padding-right: 6px !important;
+}
+
+.fb-select .Select-arrow {
+  border-top-color: var(--muted) !important;
+}
+
+.fb-select.is-open .Select-control {
+  border-color: var(--soft-lilac) !important;
+}
+
+.fb-select .Select-menu-outer {
+  font-size: 12px !important;
+  border: 0.5px solid #D0CAEA !important;
+  border-radius: 6px !important;
+  box-shadow: 0 4px 16px rgba(72,39,190,0.10) !important;
+  z-index: 9999 !important;
+}
+
+.fb-select .Select-option {
+  font-size: 12px !important;
+  padding: 6px 10px !important;
+  color: var(--deep-blue) !important;
+}
+
+.fb-select .Select-option.is-selected {
+  background: var(--light-lilac) !important;
+  color: var(--primary) !important;
+  font-weight: 600 !important;
+}
+
+.fb-select .Select-option.is-focused {
+  background: var(--light-lilac) !important;
+  color: var(--primary) !important;
+}
+
+/* Multi-value chips */
+.fb-select .Select-multi-value-wrapper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px 4px;
+  gap: 2px;
+}
+
+.fb-select .Select-value {
+  background: var(--light-lilac) !important;
+  border: 1px solid var(--card-border) !important;
+  border-radius: 4px !important;
+  color: var(--primary) !important;
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+  padding: 1px 4px !important;
+  margin: 0 !important;
+}
+
+.fb-select .Select-value-icon {
+  color: var(--soft-lilac) !important;
+  border-right: 1px solid var(--card-border) !important;
+  padding: 0 4px !important;
+}
+
+.fb-select .Select-value-icon:hover { color: var(--primary) !important; }
+
+/* ── Filter panel — dos bloques apilados ────────────────────── */
+/*
+   .filter-panel  → sticky, contiene ambas barras
+   .filter-panel .filter-bar → pierde su propio sticky (lo hereda del panel)
+   .filter-panel-row → label + barra en columna
+   .page-filter-label → etiqueta GENERALES / ADICIONALES
+*/
+.filter-panel {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+
+.filter-panel .filter-bar {
+  position: static;
+  z-index: auto;
+  border-radius: 0 var(--radius-card) var(--radius-card) 0;
+  flex: 1;
+}
+
+.filter-panel-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.page-filter-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--soft-lilac);
+  background: #F0EDFC;
+  border: 0.5px solid #D0CAEA;
+  border-right: none;
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
+  padding: 0 10px;
+  min-width: 76px;
+  text-align: center;
+  writing-mode: horizontal-tb;
+  flex-shrink: 0;
+}
+
+/* ── Segment pills ───────────────────────────────────────────── */
+.fb-pills {
+  display: flex;
+  flex-direction: row;
+  gap: 5px;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+/* OFF — apagado: gris neutro, texto muy muted */
+.fb-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 11px;
+  border-radius: 12px;
+  border: 1.5px solid #D0D0D0;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  color: #C0C0C0;
+  background: #F2F2F2;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  user-select: none;
+  line-height: 1.4;
+}
+
+/* ON — activo: borde primary, fondo lila suave, texto primary (estilo del screenshot) */
+/* Clase añadida por assets/pills.js */
+.fb-pill--on {
+  background: #F0EDFC;
+  color: var(--primary);
+  border-color: var(--primary);
+  border-width: 2px;
+  font-weight: 600;
+}
+
+.fb-pill-input {
+  display: none;
+}
+
+/* ── FX inputs ───────────────────────────────────────────────── */
+.fb-fx-block { display: flex; flex-direction: row; gap: 14px; align-items: center; }
+.fb-fx-row   { display: flex; align-items: center; gap: 5px; }
+.fb-fx-label { font-size: 10px; font-weight: 600; color: var(--muted); min-width: 48px; }
+
+.fb-fx-input {
+  width: 72px;
+  padding: 3px 6px;
+  border: 0.5px solid #D0CAEA;
+  border-radius: 5px;
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--deep-blue);
+  background: var(--page-bg);
+  outline: none;
+  -moz-appearance: textfield;
+}
+.fb-fx-input::-webkit-inner-spin-button,
+.fb-fx-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.fb-fx-input:focus { border-color: var(--soft-lilac); }
+
+/* ── Text input (Cohorte base) ───────────────────────────────── */
+.fb-text-input {
+  width: 96px;
+  padding: 4px 8px;
+  border: 0.5px solid #D0CAEA;
+  border-radius: 6px;
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--deep-blue);
+  background: var(--page-bg);
+  outline: none;
+  height: 28px;
+}
+.fb-text-input:focus { border-color: var(--soft-lilac); }
+
+/* ── DatePickerSingle (Cohorte base) ─────────────────────────── */
+.fb-date-picker .SingleDatePickerInput {
+  border: none !important;
+  background: transparent !important;
+}
+.fb-date-picker .DateInput {
+  width: 110px !important;
+  background: transparent !important;
+}
+.fb-date-picker .DateInput_input {
+  font-family: var(--font) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  color: var(--deep-blue) !important;
+  background: var(--page-bg) !important;
+  border: 0.5px solid #D0CAEA !important;
+  border-radius: 6px !important;
+  padding: 4px 8px !important;
+  height: 28px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+}
+.fb-date-picker .DateInput_input:focus,
+.fb-date-picker .DateInput_input__focused {
+  border-color: var(--soft-lilac) !important;
+  outline: none !important;
+}
+.fb-date-picker .SingleDatePickerInput_calendarIcon {
+  display: none !important;
+}
+.fb-date-picker .DayPicker {
+  font-family: var(--font) !important;
+  font-size: 12px !important;
+}
+.fb-date-picker .CalendarDay__selected,
+.fb-date-picker .CalendarDay__selected:hover {
+  background: var(--primary) !important;
+  border-color: var(--primary) !important;
+}
 
 /* ── Landing Page (copiado del SG&A Control) ────────────────── */
 /* margin negativo cancela el padding de .page-content (28px / 32px) */
@@ -624,3 +1105,180 @@ details[open] > .year-summary::before { transform: rotate(90deg); }
   transform: translateY(0);
   box-shadow: 0 2px 8px rgba(72, 39, 190, 0.2);
 }
+
+/* ── NOR/NRR Trazabilidad table (nt-*) ──────────────────────── */
+.nt-table {
+  display: flex;
+  flex-direction: column;
+  min-width: max-content;
+  font-family: var(--font);
+  font-size: 12px;
+}
+
+.nt-row {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  border-bottom: 1px solid #EDE9F8;
+}
+
+/* Columnas */
+.nt-cell {
+  padding: 7px 12px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.nt-label {
+  min-width: 160px;
+  width: 160px;
+  font-weight: 600;
+  color: var(--deep-blue);
+  position: sticky;
+  left: 0;
+  background: #fff;
+  z-index: 2;
+  border-right: 1px solid #EDE9F8;
+}
+
+.nt-tipo {
+  min-width: 130px;
+  width: 130px;
+  color: var(--muted);
+}
+
+.nt-num {
+  min-width: 130px;
+  width: 130px;
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Header */
+.nt-hdr {
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #fff !important;
+  background: var(--deep-blue) !important;
+}
+
+/* Año */
+.nt-year-group { }
+
+.nt-year-row .nt-cell   { background: #F0EDFC; }
+
+.nt-year-lbl {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--deep-blue) !important;
+  background: #F0EDFC !important;
+}
+
+.nt-year-group > .nt-summary .nt-year-lbl::before {
+  content: "▶";
+  font-size: 8px;
+  color: var(--soft-lilac);
+  margin-right: 8px;
+  transition: transform 0.18s ease;
+  display: inline-block;
+}
+
+.nt-year-group[open] > .nt-summary .nt-year-lbl::before {
+  transform: rotate(90deg);
+}
+
+/* Mes */
+.nt-month-lbl {
+  color: var(--primary) !important;
+  background: #fff !important;
+  padding-left: 28px !important;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* Flecha mes (usada en tabla churn) */
+.nt-month-group > .nt-summary .nt-month-lbl::before {
+  content: "▶";
+  font-size: 7px;
+  color: var(--soft-lilac);
+  margin-right: 6px;
+  transition: transform 0.18s ease;
+  display: inline-block;
+}
+
+.nt-month-group[open] > .nt-summary .nt-month-lbl::before {
+  transform: rotate(90deg);
+}
+
+/* Nombre de seller en filas de detalle */
+.nt-seller-name {
+  padding-left: 48px !important;
+  font-weight: 500 !important;
+  font-size: 11px;
+  color: var(--deep-blue) !important;
+  background: inherit !important;
+}
+
+/* Fila "Otros (N)" */
+.nt-otros {
+  color: var(--muted) !important;
+  font-style: italic;
+}
+
+/* Filas de detalle */
+.nt-detail-row  { background: #F8F6FE; }
+.nt-rev-row     { background: #F3F1FC; border-bottom: 2px solid #EDE9F8; }
+
+.nt-detail-tipo {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--deep-blue);
+}
+
+.nt-ratio-val {
+  font-weight: 700;
+  color: var(--primary);
+}
+
+/* Forecast */
+.nt-fc {
+  opacity: 0.65;
+  font-style: italic;
+}
+
+/* ── NDR / ODR — Hitos en tabla de promedios ────────────────── */
+.ndr-hito-row {
+  background: #F0FBF6;
+}
+
+.ndr-hito-lbl {
+  color: #00C97A !important;
+  font-weight: 700 !important;
+}
+
+/* ── Toggle Vista dentro del card del gráfico ───────────────── */
+.chart-card-wrapper {
+  position: relative;
+}
+
+.chart-vista-toggle {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  z-index: 10;
+}
+
+/* Summary reset */
+.nt-summary {
+  list-style: none;
+  cursor: pointer;
+  display: block;
+  outline: none;
+}
+
+.nt-summary::-webkit-details-marker { display: none; }
+.nt-summary:focus { outline: none; }

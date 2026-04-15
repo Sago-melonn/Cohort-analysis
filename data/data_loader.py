@@ -73,9 +73,10 @@ def _cache_key(filters: dict) -> tuple:
 # ── SQL injection ────────────────────────────────────────────────────────────
 
 def _build_params_cte(filters: dict) -> str:
-    """Construye el CTE 'params' con los valores del filtro."""
-    segments = filters["segments"]
-    seg_array = "ARRAY[" + ", ".join(f"'{s}'" for s in segments) + "]"
+    """
+    Construye el CTE 'params' sin segment_filter (ARRAY causa list_nth_cell en Redshift).
+    Los segmentos se inyectan directamente como IN (...) via _inject_filters.
+    """
     churn_val = "TRUE" if filters["include_churn"] else "FALSE"
     country_id = filters["country_id"]
     country_val = f"{country_id}::INTEGER" if country_id is not None else "NULL::INTEGER"
@@ -86,20 +87,19 @@ def _build_params_cte(filters: dict) -> str:
     return (
         "params AS (\n"
         "    SELECT\n"
-        f"        {seg_array}  AS segment_filter,\n"
-        f"        {churn_val}                                           AS include_churn,\n"
-        f"        {country_val}                                         AS country_filter,\n"
-        f"        {ot_val}                                              AS order_type_filter,\n"
-        f"        {cn_val}                                              AS include_credit_notes\n"
+        f"        {churn_val}    AS include_churn,\n"
+        f"        {country_val}  AS country_filter,\n"
+        f"        {ot_val}       AS order_type_filter,\n"
+        f"        {cn_val}       AS include_credit_notes\n"
         "),"
     )
 
 
 def _inject_filters(sql: str, filters: dict) -> str:
-    """Reemplaza el CTE 'params' en el SQL con los valores del filtro."""
+    """Reemplaza el CTE 'params' y convierte = ANY(p.segment_filter) → IN (...)."""
     new_params = _build_params_cte(filters)
 
-    # Encuentra el bloque params AS (...), y lo reemplaza
+    # 1. Reemplazar bloque params AS (...)
     lines = sql.splitlines()
     start = end = None
     for i, line in enumerate(lines):
@@ -110,9 +110,25 @@ def _inject_filters(sql: str, filters: dict) -> str:
             break
 
     if start is not None and end is not None:
-        return "\n".join(lines[:start] + new_params.splitlines() + lines[end + 1:])
+        sql = "\n".join(lines[:start] + new_params.splitlines() + lines[end + 1:])
+    else:
+        logger.warning("No se encontró el bloque params CTE en el SQL; se ejecuta sin modificar.")
 
-    logger.warning("No se encontró el bloque params CTE en el SQL; se ejecuta sin modificar.")
+    # 2. Reemplazar = ANY(p.segment_filter) → IN ('Starter', 'Tiny', 'Plus', ...)
+    # Tiny es un alias de Starter en BD — se incluye siempre que Starter esté activo.
+    _SEGMENT_ALIASES = {"Starter": ["Starter", "Tiny"]}
+    segments = filters["segments"]
+    expanded: list[str] = []
+    for s in segments:
+        expanded.extend(_SEGMENT_ALIASES.get(s, [s]))
+    in_list = ", ".join(f"'{s}'" for s in dict.fromkeys(expanded))  # preserva orden, sin duplicados
+    sql = re.sub(
+        r"=\s*ANY\s*\(\s*p\.segment_filter\s*\)",
+        f"IN ({in_list})",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
     return sql
 
 
@@ -142,11 +158,11 @@ def _read_sql(filename: str) -> str:
 
 def load_orders(filters: dict | None = None) -> pd.DataFrame:
     """
-    Carga órdenes por seller × mes desde staging.orbita.sell_order.
+    Carga órdenes totales (D2C + B2B) por seller × mes desde staging.orbita.sell_order.
 
     Columnas del DataFrame:
         seller_id, seller_name, segment, country_id, country_name,
-        cohort_month, churn_flag, order_month, order_type,
+        cohort_month, churn_flag, order_month,
         lifecycle_month, order_count
     """
     filters = _merge_filters(filters)

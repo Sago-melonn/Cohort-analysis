@@ -1,29 +1,33 @@
 """
 Vista: Inputs — Datos Reales
 
-Tabla triangular cohorte × mes calendario, agrupada por año con secciones
-html.Details desplegables. 2025 y 2026 abiertas por defecto; el resto cerradas.
+Tabla por año calendario con dos niveles:
+  Nivel 1 (siempre visible) : fila resumen por cohorte-año + fila Total
+  Nivel 2 (desplegable)     : click en "Cohorte 2024" → filas de cohorte-mes inline
 
-Fase 3 — implementación completa con datos reales desde Redshift.
+Filtros de página: metric, pais, moneda, fx-cop, fx-mxn, order-type.
 """
+import concurrent.futures
+from datetime import date
 import numpy as np
 import pandas as pd
-from dash import Input, Output, callback, dash_table, dcc, html
+from dash import Input, Output, callback, html
 from dash.exceptions import PreventUpdate
 
+from components.page_filters import inputs_filters
 from data.data_loader import load_orders, load_revenue
 from data.transforms import (
     build_filters,
     calc_nnr,
     calc_nno,
     pivot_cohort,
+    pivot_cohort_by_year,
     prepare_revenue,
-    quartile_styles,
     revenue_display_unit,
 )
 
-# Años abiertos por defecto
-_OPEN_YEARS = {2025, 2026}
+_OPEN_YEARS = {date.today().year}
+_CORTE_BASE = "2024-12-01"
 
 
 # ── Layout ────────────────────────────────────────────────────────────────────
@@ -33,34 +37,16 @@ def inputs_layout() -> html.Div:
         [
             html.Div(
                 [
-                    html.Div(
-                        [
-                            html.H2("Inputs — Datos Reales", className="page-title"),
-                            html.P(
-                                "Revenue y órdenes por cohorte × mes calendario (Feb 2021 → presente)",
-                                className="page-subtitle",
-                            ),
-                        ]
-                    ),
-                    html.Div(
-                        dcc.RadioItems(
-                            id="inputs-metric",
-                            options=[
-                                {"label": "Revenue", "value": "revenue"},
-                                {"label": "Órdenes", "value": "orders"},
-                            ],
-                            value="revenue",
-                            inline=True,
-                            className="metric-radio",
-                            labelClassName="metric-radio-label",
-                            inputClassName="metric-radio-input",
-                        ),
-                        className="page-header-controls",
+                    html.H2("Inputs — Datos Reales", className="page-title"),
+                    html.P(
+                        "Revenue y órdenes por cohorte × mes calendario (Feb 2021 → presente)",
+                        className="page-subtitle",
                     ),
                 ],
                 className="page-header",
             ),
-            html.Div(id="inputs-kpis", className="kpi-strip"),
+            inputs_filters(),
+            html.Div(id="inputs-kpis",    className="kpi-strip"),
             html.Div(id="inputs-content", className="page-section"),
         ],
         className="page",
@@ -69,246 +55,273 @@ def inputs_layout() -> html.Div:
 
 # ── Helpers UI ────────────────────────────────────────────────────────────────
 
-def _kpi_card(title: str, value: str, subtitle: str, variant: str = "primary") -> html.Div:
+def _kpi_card(title, value, subtitle, variant="primary", tooltip=None):
+    kwargs = {"className": "kpi-card"}
+    if tooltip:
+        kwargs["title"] = tooltip
     return html.Div(
         [
-            html.P(title, className="kpi-title"),
-            html.P(value, className=f"kpi-value kpi-value--{variant}"),
+            html.P(title,    className="kpi-title"),
+            html.P(value,    className=f"kpi-value kpi-value--{variant}"),
             html.P(subtitle, className="kpi-subtitle"),
         ],
-        className="kpi-card",
+        **kwargs,
     )
 
 
-def _kpis_empty() -> list:
+def _kpis_empty():
     return [
         _kpi_card("NNR Promedio",     "—", "Sin datos", "muted"),
         _kpi_card("NNO Promedio",     "—", "Sin datos", "muted"),
-        _kpi_card("Cohortes activas", "—", "Sin datos", "muted"),
-        _kpi_card("Sellers únicos",   "—", "Sin datos", "muted"),
+        _kpi_card("Sellers activos",  "—", "Sin datos", "muted"),
     ]
 
 
-def _error_content(msg: str) -> html.Div:
+def _count_active_sellers(df_orders: pd.DataFrame) -> int:
+    """Sellers con al menos 1 orden en el último mes del dataset y sin churn."""
+    if df_orders.empty:
+        return 0
+    last_month = df_orders["order_month"].max()
+    active = df_orders[
+        (df_orders["order_month"] == last_month) &
+        (df_orders["churn_flag"] == 0)
+    ]
+    return int(active["seller_id"].nunique())
+
+
+def _error_content(msg):
     return html.Div(
         html.Div(
-            [
-                html.Span("⚠", className="placeholder-icon"),
-                html.P(msg, className="placeholder-text"),
-            ],
+            [html.Span("⚠", className="placeholder-icon"),
+             html.P(msg, className="placeholder-text")],
             className="placeholder-box",
         )
     )
 
 
-def _safe_records(df: pd.DataFrame) -> list[dict]:
-    """
-    Convierte DataFrame a list-of-dicts garantizando que NaN → None
-    (JSON-serializable). Usa astype(object) para que pandas no revierta None a NaN.
-    """
-    return (
-        df.astype(object)
-        .where(pd.notnull(df), None)
-        .to_dict("records")
-    )
+# ── Helpers de tabla custom ───────────────────────────────────────────────────
+
+def _cell_style(val, q1: float, q2: float, q3: float) -> dict:
+    """Devuelve inline style (bg + color) según cuartil del valor."""
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return {}
+    if pd.isna(v) or v <= 0:
+        return {}
+    if v <= q1:
+        return {"backgroundColor": "#F0EDFC", "color": "#1A1659"}
+    if v <= q2:
+        return {"backgroundColor": "#D4C9F5", "color": "#1A1659"}
+    if v <= q3:
+        return {"backgroundColor": "#9684E1", "color": "#FFFFFF"}
+    return {"backgroundColor": "#4827BE", "color": "#FFFFFF"}
+
+
+def _fmt(val, fmt_spec: str) -> str:
+    """Formatea un número con separador de miles."""
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return "—"
+    if pd.isna(v):
+        return "—"
+    return f"{v:,.1f}" if "1f" in fmt_spec else f"{v:,.0f}"
 
 
 # ── Sección por año ───────────────────────────────────────────────────────────
 
-def _year_section(
-    year: int,
-    pivot_df: pd.DataFrame,
-    global_styles: list,
-    fmt_spec: str,
-) -> html.Details | None:
+def _year_section(year: int, pivot_yearly: pd.DataFrame,
+                  pivot_monthly: pd.DataFrame, fmt_spec: str):
     """
-    Crea una sección html.Details con DataTable para el año dado.
-    fmt_spec: especificador de formato d3, e.g. ',.1f' o ',.0f'.
+    html.Details para un año calendario:
+    - Fila resumen por cohorte-año (con ▶ para expandir) + fila Total.
+    - Al expandir un cohorte-año aparecen sus cohorte-mes inline.
     """
-    cols_year = [c for c in pivot_df.columns if c.startswith(str(year))]
+    cols_year = [c for c in pivot_yearly.columns if c.startswith(str(year))]
     if not cols_year:
         return None
 
-    # Los column IDs usan guión bajo para evitar que el parser de filter_query
-    # interprete el guión como resta: "2021-02" → "2021_02"
-    safe_id = {c: c.replace("-", "_") for c in cols_year}
+    # ── Cuartiles para heatmap (datos anuales del año) ─────────────
+    all_vals = pivot_yearly[cols_year].values.flatten()
+    all_vals = all_vals[~pd.isna(all_vals) & (all_vals > 0)]
+    if len(all_vals) >= 4:
+        q1, q2, q3 = (float(np.percentile(all_vals, p)) for p in (25, 50, 75))
+        if q1 == q3:
+            q1, q2 = q3 * 0.33, q3 * 0.66
+    else:
+        q1 = q2 = q3 = float("inf")  # sin coloreado si hay muy pocos valores
 
-    df_show = pivot_df[cols_year].reset_index().copy()
-    df_show = df_show.rename(columns=safe_id)
-    records = _safe_records(df_show)
+    # ── Header ────────────────────────────────────────────────────
+    header = html.Div(
+        [html.Span("Cohorte", className="ct-cell ct-cell-first ct-header-cell")]
+        + [html.Span(c, className="ct-cell ct-header-cell") for c in cols_year],
+        className="ct-row ct-header-row",
+    )
 
-    dt_columns = [{"name": "Cohorte", "id": "Cohorte", "type": "text"}] + [
-        {
-            "name": col,                   # display: "2021-02"
-            "id":   safe_id[col],          # key:     "2021_02"
-            "type": "numeric",
-            "format": {"specifier": fmt_spec},
-        }
-        for col in cols_year
-    ]
+    # ── Filas por cohorte-año ─────────────────────────────────────
+    cohort_years = sorted(pivot_yearly.index.tolist())
+    groups = []
 
-    # Reasignar column_id y filter_query de los estilos globales al safe_id
-    year_styles = []
-    for s in global_styles:
-        orig = s.get("if", {}).get("column_id", "")
-        if orig not in safe_id:
-            continue
-        sid = safe_id[orig]
-        fq  = s["if"].get("filter_query", "").replace(f"{{{orig}}}", f"{{{sid}}}")
-        year_styles.append({
-            **s,
-            "if": {**s["if"], "column_id": sid, "filter_query": fq},
-        })
+    for cy in cohort_years:
+        # Valores de la fila resumen
+        yr_vals = [pivot_yearly.loc[cy, c] for c in cols_year]
 
-    table = dash_table.DataTable(
-        columns=dt_columns,
-        data=records,
-        fixed_columns={"headers": True, "data": 1},
-        style_table={"overflowX": "auto", "minWidth": "100%"},
-        style_cell={
-            "fontFamily": "'Poppins', sans-serif",
-            "fontSize":   "12px",
-            "padding":    "6px 10px",
-            "textAlign":  "center",
-            "minWidth":   "78px",
-            "border":     "1px solid #EDE9F8",
-            "whiteSpace": "nowrap",
-            "overflow":   "hidden",
-        },
-        style_cell_conditional=[
-            {
-                "if": {"column_id": "Cohorte"},
-                "textAlign":       "left",
-                "fontWeight":      "700",
-                "color":           "#1A1659",
-                "minWidth":        "90px",
-                "maxWidth":        "90px",
-                "backgroundColor": "#FFFFFF",
-                "borderRight":     "2px solid #D4C9F5",
-            }
-        ],
-        style_header={
-            "backgroundColor": "#1A1659",
-            "color":           "#FFFFFF",
-            "fontWeight":      "700",
-            "fontSize":        "11px",
-            "padding":         "8px 10px",
-            "border":          "1px solid #1A1659",
-            "whiteSpace":      "nowrap",
-        },
-        style_header_conditional=[
-            {
-                "if": {"column_id": "Cohorte"},
-                "backgroundColor": "#1A1659",
-            }
-        ],
-        style_data={"backgroundColor": "#FFFFFF", "color": "#1A1659"},
-        style_data_conditional=year_styles,
-        page_action="none",
-        sort_action="none",
+        summary_content = html.Div(
+            [html.Span(f"Cohorte {cy}", className="ct-cell ct-cell-first ct-year-label")]
+            + [html.Span(_fmt(v, fmt_spec), className="ct-cell",
+                         style=_cell_style(v, q1, q2, q3))
+               for v in yr_vals],
+            className="ct-row ct-year-row",
+        )
+
+        # Filas de detalle (cohorte-mes individuales de este año de cohorte)
+        rows_cy    = [r for r in pivot_monthly.index if r.startswith(cy + "-")]
+        cols_avail = [c for c in cols_year if c in pivot_monthly.columns]
+        detail_rows = []
+
+        if rows_cy and cols_avail:
+            for cm in rows_cy:
+                mo_vals = [
+                    pivot_monthly.loc[cm, c] if c in cols_avail else None
+                    for c in cols_year
+                ]
+                detail_rows.append(
+                    html.Div(
+                        [html.Span(cm, className="ct-cell ct-cell-first ct-month-label")]
+                        + [html.Span(_fmt(v, fmt_spec), className="ct-cell ct-detail-cell",
+                                     style=_cell_style(v, q1, q2, q3))
+                           for v in mo_vals],
+                        className="ct-row ct-detail-row",
+                    )
+                )
+
+        if detail_rows:
+            groups.append(
+                html.Details(
+                    [
+                        html.Summary(summary_content, className="ct-summary"),
+                        html.Div(detail_rows, className="ct-detail-body"),
+                    ],
+                    open=False,
+                    className="ct-group",
+                )
+            )
+        else:
+            # Sin cohorte-mes disponibles → fila estática sin flecha
+            groups.append(
+                html.Div(summary_content, className="ct-group-nodrill")
+            )
+
+    # ── Total ─────────────────────────────────────────────────────
+    total_vals = [float(pivot_yearly[c].sum(skipna=True)) for c in cols_year]
+    total_row = html.Div(
+        [html.Span("Total", className="ct-cell ct-cell-first ct-total-label")]
+        + [html.Span(_fmt(v, fmt_spec), className="ct-cell ct-total-cell")
+           for v in total_vals],
+        className="ct-row ct-total-row",
     )
 
     return html.Details(
-        [html.Summary(str(year), className="year-summary"), table],
+        [
+            html.Summary(str(year), className="year-summary"),
+            html.Div(
+                html.Div([header, *groups, total_row], className="ct-table"),
+                className="ct-wrap",
+            ),
+        ],
         open=(year in _OPEN_YEARS),
         className="year-section",
     )
 
 
-# ── Callback ──────────────────────────────────────────────────────────────────
+# ── Callback principal ────────────────────────────────────────────────────────
 
 @callback(
     Output("inputs-content", "children"),
     Output("inputs-kpis",    "children"),
-    Input("filter-pais",           "value"),
-    Input("filter-segmentos",      "value"),
-    Input("filter-churn",          "value"),
-    Input("filter-order-type",     "value"),
-    Input("filter-corte-base",     "value"),
-    Input("filter-fx-cop",         "value"),
-    Input("filter-fx-mxn",         "value"),
-    Input("filter-estacionalidad", "value"),
-    Input("inputs-metric",         "value"),
-    Input("url",                   "pathname"),
+    Input("inputs-metric",  "value"),
+    Input("inputs-pais",    "value"),
+    Input("inputs-moneda",  "value"),
+    Input("inputs-fx-cop",  "value"),
+    Input("inputs-fx-mxn",  "value"),
+    Input("url",            "pathname"),
     prevent_initial_call=False,
 )
-def update_inputs(
-    pais, segmentos, churn, order_type, corte_base,
-    fx_cop, fx_mxn, estacionalidad, metric, pathname,
-):
-    # Solo activo en /inputs (no en landing)
+def update_inputs(metric, pais, moneda, fx_cop, fx_mxn, pathname):
     if pathname != "/inputs":
         raise PreventUpdate
 
-    # Defaults defensivos
-    pais           = pais or "CONSOLIDADO"
-    segmentos      = segmentos or ["Starter", "Plus", "Top", "Enterprise"]
-    churn          = churn or "incluir"
-    order_type     = order_type or "ambos"
-    corte_base     = corte_base or "2024-12-01"
-    fx_cop         = float(fx_cop or 3800)
-    fx_mxn         = float(fx_mxn or 17.5)
-    estacionalidad = float(estacionalidad or 1.0)
+    pais   = pais   or "CONSOLIDADO"
+    moneda = moneda or "local"
+    fx_cop = float(fx_cop or 3800)
+    fx_mxn = float(fx_mxn or 17.5)
 
-    filters = build_filters(pais, segmentos, churn, order_type)
+    filters = build_filters(pais, None, None, None)   # order_type=None → siempre ambos
 
-    # Cargar ambos DataFrames (TTL cache 30 min)
-    df_orders = load_orders(filters)
-    df_rev    = load_revenue(filters)
-    df_rev_p  = prepare_revenue(df_rev, pais, fx_cop, fx_mxn)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        fut_orders = ex.submit(load_orders,  filters)
+        fut_rev    = ex.submit(load_revenue, filters)
+        df_orders  = fut_orders.result()
+        df_rev     = fut_rev.result()
 
-    # ── KPIs ──────────────────────────────────────────────────────────────────
-    nnr_val = calc_nnr(df_rev_p, corte_base, estacionalidad)
-    nno_val = calc_nno(df_orders, corte_base)
-    unit    = revenue_display_unit(pais)
+    df_rev_p = prepare_revenue(df_rev, pais, moneda, fx_cop, fx_mxn)
+
+    # ── KPIs ──────────────────────────────────────────────────────
+    unit    = revenue_display_unit(pais, moneda)
+    nnr_val = calc_nnr(df_rev_p, _CORTE_BASE, 1.0)
+    nno_val = calc_nno(df_orders, _CORTE_BASE)
     nnr_str = f"{nnr_val:,.1f}" if nnr_val is not None else "—"
     nno_str = f"{nno_val:,.0f}" if nno_val is not None else "—"
 
-    # ── Pivot según métrica ───────────────────────────────────────────────────
+    # ── Pivots: yearly (resumen) y monthly (drill-down) ────────────
     if metric == "revenue":
         if df_rev_p.empty:
             return _error_content("Sin datos de revenue para los filtros seleccionados."), _kpis_empty()
-        pivot     = pivot_cohort(df_rev_p, "display_value", "revenue_month")
-        fmt_spec  = ",.1f"
-        n_sellers = int(df_rev["seller_id"].nunique()) if not df_rev.empty else 0
+        pivot_yr = pivot_cohort_by_year(df_rev_p, "display_value", "revenue_month")
+        pivot_mo = pivot_cohort(df_rev_p, "display_value", "revenue_month")
+        fmt_spec = ",.0f"
     else:
         if df_orders.empty:
             return _error_content("Sin datos de órdenes para los filtros seleccionados."), _kpis_empty()
-        pivot     = pivot_cohort(df_orders, "order_count", "order_month")
-        fmt_spec  = ",.0f"
-        n_sellers = int(df_orders["seller_id"].nunique()) if not df_orders.empty else 0
+        pivot_yr = pivot_cohort_by_year(df_orders, "order_count", "order_month")
+        pivot_mo = pivot_cohort(df_orders, "order_count", "order_month")
+        fmt_spec = ",.0f"
 
-    if pivot.empty:
+    if pivot_yr.empty:
         return _error_content("Sin datos para los filtros seleccionados."), _kpis_empty()
 
-    # ── Construir secciones por año ───────────────────────────────────────────
-    data_cols = list(pivot.columns)
-    styles    = quartile_styles(pivot, data_cols)
-    years     = sorted({int(c[:4]) for c in data_cols})
-    sections  = [_year_section(y, pivot, styles, fmt_spec) for y in years]
-    sections  = [s for s in sections if s is not None]
+    # ── Secciones por año calendario ──────────────────────────────
+    years    = sorted({int(c[:4]) for c in pivot_yr.columns})
+    sections = [
+        s for s in (
+            _year_section(y, pivot_yr, pivot_mo, fmt_spec) for y in years
+        ) if s
+    ]
 
-    unit_label_text = unit if metric == "revenue" else "órdenes"
+    unit_label = unit if metric == "revenue" else "órdenes"
     content = html.Div(
         [
-            html.Div(
-                html.Span(f"Unidad: {unit_label_text}", className="table-unit-label"),
-                className="table-unit-row",
-            ),
+            html.Div(html.Span(f"Unidad: {unit_label}", className="table-unit-label"),
+                     className="table-unit-row"),
             *sections,
         ],
         className="cohort-sections",
     )
 
+    n_active = _count_active_sellers(df_orders)
     kpis = [
         _kpi_card(
-            "NNR Promedio", nnr_str,
-            f"avg M2+M3 × {estacionalidad:.2f} ({unit})",
-            "primary",
+            "NNR Promedio", nnr_str, unit, "primary",
+            tooltip="avg(Revenue M2 + M3) de sellers nuevos (entrada > corte base)",
         ),
-        _kpi_card("NNO Promedio",     nno_str,        "avg M2+M3 (órdenes)",           "primary"),
-        _kpi_card("Cohortes activas", str(n_cohorts := len(pivot.index)), "Con al menos 1 mes de historia", "muted"),
-        _kpi_card("Sellers únicos",   str(n_sellers), "Según filtros aplicados",        "muted"),
+        _kpi_card(
+            "NNO Promedio", nno_str, "órdenes", "primary",
+            tooltip="avg(Órdenes M2 + M3) de sellers nuevos (entrada > corte base)",
+        ),
+        _kpi_card(
+            "Sellers activos", str(n_active),
+            "Con órdenes en el último mes y sin churn", "muted",
+        ),
     ]
-
     return content, kpis
