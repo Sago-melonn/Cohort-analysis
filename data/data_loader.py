@@ -338,6 +338,27 @@ def load_last_order_month() -> "date | None":
     return result
 
 
+def load_sellers() -> pd.DataFrame:
+    """
+    Lista única de sellers con su cohort_month original (según los datos de Redshift).
+    Usa load_orders con filtros por defecto (todos los segmentos y países).
+
+    Columnas: seller_id, seller_name, cohort_month, country_id, country_name
+    """
+    df = load_orders()
+    if df.empty:
+        return pd.DataFrame(columns=["seller_id", "seller_name", "cohort_month", "country_id", "country_name"])
+
+    cols = [c for c in ["seller_id", "seller_name", "cohort_month", "country_id", "country_name"] if c in df.columns]
+    return (
+        df[cols]
+        .sort_values("cohort_month")                        # keep earliest cohort on dedup
+        .drop_duplicates(subset=["seller_id"], keep="first")
+        .sort_values("seller_name")
+        .reset_index(drop=True)
+    )
+
+
 def clear_cache() -> None:
     """Limpia todas las cachés manualmente (útil para testing)."""
     with _lock:

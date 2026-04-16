@@ -10,6 +10,8 @@ from components.sidebar import sidebar
 dash_app.layout = html.Div(
     [
         dcc.Location(id="url", refresh=False),
+        # Store global: overrides de cohorte por seller (persiste en localStorage)
+        dcc.Store(id="cohort-overrides", storage_type="local", data=[]),
         html.Div(
             [
                 sidebar(),

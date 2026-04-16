@@ -22,6 +22,7 @@ import callbacks.cb_inputs        # noqa: F401
 import callbacks.cb_nor           # noqa: F401
 import callbacks.cb_ndr           # noqa: F401
 import callbacks.cb_nnr           # noqa: F401
+import callbacks.cb_config        # noqa: F401
 
 
 # ── Cache warm-up ─────────────────────────────────────────────────────────────
@@ -47,4 +48,4 @@ threading.Thread(target=_warmup, daemon=True).start()
 
 
 if __name__ == "__main__":
-    dash_app.run(debug=True, port=8052)
+    dash_app.run(debug=True, port=8055)

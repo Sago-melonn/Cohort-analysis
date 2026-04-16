@@ -574,6 +574,39 @@ details[open] > .year-summary::before { transform: rotate(90deg); }
 }
 .ct-detail-cell  { font-size: 11px; }
 
+/* Nivel 3 — cohorte expandible hacia sellers */
+.ct-cohort-summary {
+  list-style: none;
+  display: block;
+  cursor: pointer;
+}
+.ct-cohort-summary::-webkit-details-marker { display: none; }
+.ct-cohort-summary:focus { outline: none; }
+.ct-cohort-summary:hover .ct-month-label { background: var(--light-lilac) !important; }
+
+.ct-cohort-group > .ct-cohort-summary .ct-month-label::before {
+  content: "▶";
+  font-size: 7px;
+  color: var(--soft-lilac);
+  margin-right: 5px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+.ct-cohort-group[open] > .ct-cohort-summary .ct-month-label::before {
+  transform: rotate(90deg);
+}
+
+/* Filas de sellers (tercer nivel) */
+.ct-seller-body { border-top: 1px dashed #EDE9F8; }
+.ct-seller-label {
+  padding-left: 50px !important;
+  font-size: 10px !important;
+  color: #888 !important;
+  font-weight: 400 !important;
+  background: #FDFCFF !important;
+}
+.ct-seller-cell { font-size: 10px !important; color: #777 !important; background: #FDFCFF; }
+
 /* Fila Total */
 .ct-total-row {
   background: #1A1659;

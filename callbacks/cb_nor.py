@@ -15,12 +15,13 @@ Cards:
 """
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Input, Output, callback, clientside_callback, dcc, html
+from dash import Input, Output, State, callback, clientside_callback, dcc, html
 from dash.exceptions import PreventUpdate
 
 from components.page_filters import nor_filters
 from data.data_loader import load_forecast, load_orders, load_revenue
 from data.transforms import (
+    apply_cohort_overrides,
     build_filters,
     calc_retention_series,
     prepare_revenue,
@@ -376,10 +377,12 @@ def _build_churn_section(
     Input("nor-forecast",  "value"),
     Input("nor-vista",     "value"),
     Input("url",           "pathname"),
+    State("cohort-overrides", "data"),
     prevent_initial_call=False,
 )
 def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
-               segmentos, churn, universo, corte_base, use_forecast, vista, pathname):
+               segmentos, churn, universo, corte_base, use_forecast, vista, pathname,
+               cohort_overrides):
     if pathname != "/nor":
         raise PreventUpdate
 
@@ -390,7 +393,7 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
     # Normalizar a día 1 del mes (DatePickerSingle puede devolver cualquier día)
     corte_base = (
         pd.Timestamp(corte_base).replace(day=1).strftime("%Y-%m-%d")
-        if corte_base else "2024-12-01"
+        if corte_base else pd.Timestamp.today().replace(month=12, day=1).replace(year=max(pd.Timestamp.today().year - 2, 2024)).strftime("%Y-%m-%d")
     )
 
     # Forecast solo aplica para NOR
@@ -400,13 +403,13 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
     last_closed = _last_closed_month()
 
     filters   = build_filters(pais, segmentos, churn, None)
-    df_orders = load_orders(filters)
-    df_rev    = load_revenue(filters)
+    df_orders = apply_cohort_overrides(load_orders(filters),  cohort_overrides, "order_month")
+    df_rev    = apply_cohort_overrides(load_revenue(filters), cohort_overrides, "revenue_month")
     df_rev_p  = prepare_revenue(df_rev, pais, moneda, fx_cop, fx_mxn)
 
     df_fc = None
     if use_forecast == "si":
-        df_fc = load_forecast(filters)
+        df_fc = apply_cohort_overrides(load_forecast(filters), cohort_overrides, "forecast_month")
 
     # Cortar actuals en last_closed: evita que un mes parcial (ej. Abril en curso)
     # sea tomado como last_actual en calc_retention_series y deje Abril en el limbo
@@ -521,14 +524,23 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
                 x=nor_act["month"],
                 y=nor_act[_y_col()],
                 name="NOR",
-                mode="lines+markers+text",
+                mode="lines",
+                showlegend=False,
+                hoverinfo="skip",
+                line=dict(color="#4827BE", width=2),
+            ))
+            fig.add_trace(go.Scatter(
+                x=nor_act["month"],
+                y=nor_act[_y_col()],
+                name="NOR",
+                mode="markers+text",
+                hoveron="points",
                 text=[_fmt_act(v) for v in nor_act[_y_col()]],
                 textposition="top center",
                 textfont=dict(size=10, color="#4827BE", family="Arial Black, sans-serif"),
                 cliponaxis=False,
                 customdata=nor_act[["smooth_num", "smooth_den", "ratio"]].values,
-                line=dict(color="#4827BE", width=2),
-                marker=dict(size=5),
+                marker=dict(size=5, color="#4827BE"),
                 hovertemplate=(
                     "<b>%{x|%b %Y}</b><br>"
                     "Órdenes (T): %{customdata[0]:,.0f}<br>"
@@ -560,18 +572,27 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
                         showlegend=False,
                         hoverinfo="skip",
                     ))
-                # Traza forecast: empieza en Abril — etiqueta y hover completos en todos los puntos
+                # Traza forecast: empieza en Abril — línea sin hover + puntos con hover
                 fig.add_trace(go.Scatter(
                     x=nor_fc["month"],
                     y=nor_fc[_y_col()],
                     name="NOR (forecast)",
-                    mode="lines+markers+text",
+                    mode="lines",
+                    showlegend=False,
+                    hoverinfo="skip",
+                    line=dict(color="#F97316", width=2, dash="dot"),
+                ))
+                fig.add_trace(go.Scatter(
+                    x=nor_fc["month"],
+                    y=nor_fc[_y_col()],
+                    name="NOR (forecast)",
+                    mode="markers+text",
+                    hoveron="points",
                     text=[_fmt_act(v) for v in nor_fc[_y_col()]],
                     textposition="top center",
                     textfont=dict(size=10, color="#F97316", family="Arial Black, sans-serif"),
                     cliponaxis=False,
                     customdata=nor_fc[["smooth_num", "smooth_den", "ratio"]].values,
-                    line=dict(color="#F97316", width=2, dash="dot"),
                     marker=dict(size=5, color="#F97316"),
                     hovertemplate=(
                         "<b>%{x|%b %Y}</b><br>"
@@ -598,14 +619,23 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
                 x=nrr_act["month"],
                 y=nrr_act[_y_col()],
                 name="NRR",
-                mode="lines+markers+text",
+                mode="lines",
+                showlegend=False,
+                hoverinfo="skip",
+                line=dict(color="#22C55E", width=2),
+            ))
+            fig.add_trace(go.Scatter(
+                x=nrr_act["month"],
+                y=nrr_act[_y_col()],
+                name="NRR",
+                mode="markers+text",
+                hoveron="points",
                 text=[_fmt_act(v) for v in nrr_act[_y_col()]],
                 textposition="top center",
                 textfont=dict(size=10, color="#22C55E", family="Arial Black, sans-serif"),
                 cliponaxis=False,
                 customdata=nrr_act[["smooth_num", "smooth_den", "ratio"]].values,
-                line=dict(color="#22C55E", width=2),
-                marker=dict(size=5),
+                marker=dict(size=5, color="#22C55E"),
                 hovertemplate=(
                     "<b>%{x|%b %Y}</b><br>"
                     f"Revenue (T) ({unit}): %{{customdata[0]:,.1f}}<br>"
@@ -679,7 +709,8 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
             range=[y_min, y_max],
         ),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        hovermode="x unified",
+        hovermode="closest",
+        hoverdistance=2,
         plot_bgcolor="white",
         paper_bgcolor="white",
         margin=dict(l=60, r=40, t=90, b=80),
@@ -782,8 +813,8 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
 
     # ── Sección Churn ─────────────────────────────────────────────────────────
     churn_filters    = build_filters(pais, segmentos, "incluir", None)  # siempre include_churn=True
-    df_orders_churn  = load_orders(churn_filters)
-    df_rev_churn     = load_revenue(churn_filters)
+    df_orders_churn  = apply_cohort_overrides(load_orders(churn_filters),  cohort_overrides, "order_month")
+    df_rev_churn     = apply_cohort_overrides(load_revenue(churn_filters), cohort_overrides, "revenue_month")
     df_rev_churn_p   = prepare_revenue(df_rev_churn, pais, moneda, fx_cop, fx_mxn)
     churn_section    = _build_churn_section(
         df_orders_churn, df_rev_churn_p,

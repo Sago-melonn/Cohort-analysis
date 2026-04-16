@@ -11,12 +11,13 @@ import concurrent.futures
 from datetime import date
 import numpy as np
 import pandas as pd
-from dash import Input, Output, callback, html
+from dash import Input, Output, State, callback, html
 from dash.exceptions import PreventUpdate
 
 from components.page_filters import inputs_filters
 from data.data_loader import load_orders, load_revenue
 from data.transforms import (
+    apply_cohort_overrides,
     build_filters,
     calc_nnr,
     calc_nno,
@@ -246,9 +247,10 @@ def _year_section(year: int, pivot_yearly: pd.DataFrame,
     Input("inputs-fx-cop",  "value"),
     Input("inputs-fx-mxn",  "value"),
     Input("url",            "pathname"),
+    State("cohort-overrides", "data"),
     prevent_initial_call=False,
 )
-def update_inputs(metric, pais, moneda, fx_cop, fx_mxn, pathname):
+def update_inputs(metric, pais, moneda, fx_cop, fx_mxn, pathname, cohort_overrides):
     if pathname != "/inputs":
         raise PreventUpdate
 
@@ -262,8 +264,8 @@ def update_inputs(metric, pais, moneda, fx_cop, fx_mxn, pathname):
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
         fut_orders = ex.submit(load_orders,  filters)
         fut_rev    = ex.submit(load_revenue, filters)
-        df_orders  = fut_orders.result()
-        df_rev     = fut_rev.result()
+        df_orders  = apply_cohort_overrides(fut_orders.result(), cohort_overrides, "order_month")
+        df_rev     = apply_cohort_overrides(fut_rev.result(),    cohort_overrides, "revenue_month")
 
     df_rev_p = prepare_revenue(df_rev, pais, moneda, fx_cop, fx_mxn)
 

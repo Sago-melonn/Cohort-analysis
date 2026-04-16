@@ -8,7 +8,19 @@ Controles:
   - Cohorte base            → Input texto
   - FX COP/USD, MXN/USD     → Input número (72 px)
 """
+import pandas as pd
 from dash import dcc, html
+
+
+def _default_corte_base() -> str:
+    """Devuelve el corte base por defecto según el año actual.
+
+    Se fija en 2024 hasta 2026 inclusive, y luego avanza año a año.
+    Ej: en 2027 el default pasa a 2025-12-01.
+    """
+    year = pd.Timestamp.today().year
+    base_year = max(year - 2, 2024)
+    return f"{base_year}-12-01"
 
 
 # ── Helpers internos ──────────────────────────────────────────────────────────
@@ -160,14 +172,15 @@ def _g_churn(prefix: str) -> html.Div:
 
 
 def _g_corte_base(prefix: str) -> html.Div:
+    default_date = _default_corte_base()
     return html.Div([
         _lbl("Cohorte base (≤)"),
         dcc.DatePickerSingle(
             id=f"{prefix}-corte-base",
-            date="2024-12-01",
+            date=default_date,
             min_date_allowed="2022-01-01",
-            max_date_allowed="2026-12-01",
-            initial_visible_month="2024-12-01",
+            max_date_allowed=f"{pd.Timestamp.today().year}-12-01",
+            initial_visible_month=default_date,
             display_format="MMM YYYY",
             first_day_of_week=1,
             clearable=False,
@@ -290,6 +303,19 @@ def ndr_filters() -> html.Div:
                 ], className="fb-group"),
                 _sep(),
                 _g_churn("ndr"),
+                _sep(),
+                html.Div([
+                    _lbl("Años"),
+                    dcc.Checklist(
+                        id="ndr-year-select",
+                        options=[],
+                        value=[],
+                        inline=True,
+                        className="fb-pills",
+                        labelClassName="fb-pill fb-year-pill",
+                        inputClassName="fb-pill-input",
+                    ),
+                ], className="fb-group"),
             ], className="filter-bar"),
         ], className="filter-panel-row"),
     ], className="filter-panel")

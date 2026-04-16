@@ -258,8 +258,12 @@ def calc_retention_series(
     for M in all_months:
         M = pd.Timestamp(M)
 
+        # Base: cohortes fijas hasta corte_base, pero el corte efectivo para el mes M
+        # no puede incluir cohortes más jóvenes que M-12. Esto evita ratios inflados
+        # en meses como 2025 donde cohortes recientes aparecen en el numerador pero
+        # no en el denominador.
         if universe_mode == "base":
-            cutoff = cutoff_base
+            cutoff = min(cutoff_base, pd.Timestamp(M - pd.DateOffset(months=13)))
         else:
             # "todos": cohort_month < M-12  ≡  cohort_month ≤ M-13 meses
             cutoff = pd.Timestamp(M - pd.DateOffset(months=13))
@@ -339,6 +343,57 @@ def calc_cohort_matrix(
 
 
 # ── Heatmap styles ────────────────────────────────────────────────────────────
+
+def apply_cohort_overrides(
+    df: pd.DataFrame,
+    overrides: "list | None",
+    month_col: str,
+) -> pd.DataFrame:
+    """
+    Ajusta la cohorte de inicio de sellers específicos.
+
+    Para cada override:
+      1. Cambia cohort_month al valor indicado.
+      2. Recalcula lifecycle_month relativo a la nueva cohorte (1-indexado,
+         consistente con el SQL: DATEDIFF('month', cohort_month, order_month) + 1).
+      3. Elimina filas con lifecycle_month < 1 (período piloto anterior a la nueva cohorte).
+
+    overrides: list of {"seller_id": int, "override_cohort": "YYYY-MM-DD"}
+    month_col:  columna con el mes de transacción ("order_month", "revenue_month", "forecast_month")
+    """
+    if not overrides or df.empty or month_col not in df.columns:
+        return df
+
+    df = df.copy()
+    df["cohort_month"] = pd.to_datetime(df["cohort_month"])
+    df[month_col]      = pd.to_datetime(df[month_col])
+    df["lifecycle_month"] = pd.to_numeric(df["lifecycle_month"], errors="coerce")
+
+    for entry in overrides:
+        sid = entry.get("seller_id")
+        new_cohort_str = entry.get("override_cohort")
+        if sid is None or not new_cohort_str:
+            continue
+        try:
+            new_cohort = pd.Timestamp(new_cohort_str)
+        except Exception:
+            continue
+
+        mask = df["seller_id"] == int(sid)
+        if not mask.any():
+            continue
+
+        df.loc[mask, "cohort_month"] = new_cohort
+        df.loc[mask, "lifecycle_month"] = (
+            (df.loc[mask, month_col].dt.year  - new_cohort.year)  * 12
+            + (df.loc[mask, month_col].dt.month - new_cohort.month)
+            + 1   # 1-indexado igual que el SQL
+        )
+
+    # Eliminar período piloto (antes de la nueva cohorte)
+    df = df[df["lifecycle_month"] >= 1].copy()
+    return df
+
 
 def quartile_styles(pivot_df: pd.DataFrame, data_cols: list[str]) -> list[dict]:
     """
