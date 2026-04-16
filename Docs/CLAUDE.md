@@ -403,7 +403,7 @@ total_revenue =
 | App v2 — Scaffold (layout + sidebar + routing) | ✅ Hecho | Shell flex row, sidebar sticky, routing con PreventUpdate |
 | App v2 — Vista Inputs (heatmap + KPIs) | ✅ Hecho | Tabla custom 2 niveles, drill-down inline, KPIs, sticky filter bar |
 | App v2 — Vista NOR/NRR | ✅ Hecho | KPIs + gráfico Plotly + trazabilidad + sección Churn (bar chart + tabla TOP10) — cb_nor.py |
-| App v2 — Vista NDR/ODR | ✅ Hecho | Gráfico curva promedio + tabla hitos + heatmap suavizado — cb_ndr.py |
+| App v2 — Vista NDR/ODR | ✅ Hecho | Gráfico + tabla hitos + heatmap absolutos (agrupado año/mes) + tabla ratios Mn/M1 + exportación Excel 2 hojas — cb_ndr.py |
 | App v2 — Vista NNR/NNO | 🔴 Pendiente | Stub en cb_nnr.py |
 | Deploy | 🔴 Pendiente | |
 
@@ -415,7 +415,7 @@ total_revenue =
 |---|---|
 | 2026-04-08 | Cohorte = mes de primera facturación del seller |
 | 2026-04-08 | Segmentos activos: Starter, Plus, Top, Enterprise (Tiny excluido por default) |
-| 2026-04-08 | Hitos de retención clave: M13 y M25 |
+| 2026-04-08 | Hitos de retención clave: M13 y M25 (ampliado a M13, M25, M37, M49 el 2026-04-16) |
 | 2026-04-08 | NNR = avg(M2+M3), ajustado por estacionalidad (factor input variable) |
 | 2026-04-08 | NDR base = M0 (mes de entrada), no M1 |
 | 2026-04-08 | Corte Base/Nuevos = Dic 2024 (excepción: 1 seller MEX) |
@@ -477,6 +477,19 @@ total_revenue =
 | 2026-04-15 | NDR/ODR: universo = todos los cohortes históricos (sin filtro corte_base). Filtros activos: País, Moneda/FX, Segmentos pills, Churn, Métrica (ODR=órdenes / NDR=revenue) |
 | 2026-04-15 | NDR/ODR: heatmap reutiliza clases ct-* de Inputs. M13 y M25 con borde verde y header verde. Filas subtotales: Avg Aritmético (#E8E2F8) y Avg Ponderado (#4827BE) al pie del heatmap |
 | 2026-04-15 | ndr_filters() rediseñado: layout dos bloques (Generales/Adicionales) igual que NOR. Segmentos como pills con clientside_callback. Sin corte base |
+| 2026-04-16 | NDR/ODR tabla heatmap: agrupada por año (ascendente 2021→2026), cohortes Ene→Dic dentro de cada año, con html.Details/Summary nativo. Años con 1 cohorte usan ct-group-nodrill |
+| 2026-04-16 | NDR/ODR: mes actual excluido automáticamente (dato incompleto). Filtro: lifecycle_month ≤ meses_transcurridos desde cohort_month |
+| 2026-04-16 | NDR/ODR: hitos expandidos a M13, M25, M37, M49 (borde verde + header verde). _HITOS incluye M36, M37, M48, M49 |
+| 2026-04-16 | NDR/ODR: segunda tabla "Ratios NDR/ODR (Mn/M1)" con columna Σ M1-M12 (peso absoluto), ratios en %, filas Avg Aritmético + Avg Ponderado. Avg Ponderado muestra el total de pesos (Σ M1-M12 global) |
+| 2026-04-16 | NDR/ODR: exportación Excel única (botón "↓ Exportar Excel") con dos hojas: "Absolutos" y "Ratios NDR-ODR". Columnas: Año, Mes, Cohorte, Σ M1-M12, M1..Mn |
+| 2026-04-16 | NDR/ODR: dcc.Store(id="ndr-store") serializa smooth_df, weights y promedios para exportación sin recalcular |
+| 2026-04-16 | NDR/ODR: M0 = mes de adquisición (shift lifecycle_month -= 1). Ponderador y ratios desde M1. Tabla "Sin suavizar" encima de la suavizada para verificación |
+| 2026-04-16 | NDR/ODR: tabla Sin suavizar con seller drill-down (top 5 + Otros) por Σ M1-M12. Tres niveles: Año → Cohorte (Details) → Sellers (Details) |
+| 2026-04-16 | NDR/ODR: Curva Promedio y tabla hitos muestran ratios Mn/M1 (no absolutos). Etiquetas bold en top-center en cada punto. Sin tooltip (hoverinfo=skip) |
+| 2026-04-16 | NDR/ODR: pills de años en filtros Adicionales. _MIN_YEAR_WEIGHT_BY_UNIT define umbrales fijos por moneda (K MXN=2000, MM COP=10, K USD=100). Años bajo el umbral arrancan auto-OFF |
+| 2026-04-16 | NDR/ODR: update_ratio_section callback separado — reacciona a ndr-store + ndr-year-select. Recalcula promedios solo con años activos; años excluidos se grisan en la tabla de ratios |
+| 2026-04-16 | Config /config: página nueva en sidebar (⚙). Override de cohorte por seller: buscar seller, asignar nueva cohorte, tabla con ✕ para eliminar. Persiste en dcc.Store(storage_type="local") |
+| 2026-04-16 | apply_cohort_overrides() en transforms.py: cambia cohort_month, recalcula lifecycle_month relativo a la nueva cohorte, descarta filas < M1 (período piloto). Aplica en NDR, NOR, Inputs |
 
 ---
 
