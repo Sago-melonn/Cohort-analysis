@@ -21,7 +21,7 @@ from dash import Input, Output, State, callback, clientside_callback, dcc, html
 from dash.exceptions import PreventUpdate
 
 from components.page_filters import ndr_filters
-from data.data_loader import load_orders, load_revenue
+from data.data_loader import load_orders, load_revenue, load_forecast
 from data.transforms import (
     apply_cohort_overrides,
     build_filters,
@@ -37,6 +37,8 @@ _LBL_W  = 110   # px — columna etiqueta cohorte
 _CELL_W = 78    # px — cada celda de lifecycle month
 _MW     = 96    # px — columna meta (Σ M1-M12)
 _META_BG = "#EEF6EE"  # verde suave para columnas meta
+_FC_BG   = "#FFF3E0"  # naranja suave para celdas forecast
+_FC_FG   = "#B25F00"  # texto naranja oscuro para celdas forecast
 
 # Peso anual mínimo (Σ M1-M12 por año) para que el año se auto-active
 # por debajo de este umbral el año arranca OFF (evita distorsión de cohortes muy pequeños)
@@ -280,8 +282,16 @@ def _build_chart(
     weighted_ratio_avgs: dict,
     metric: str,
     pais: str,
+    fc_mask: "pd.DataFrame | None" = None,
 ) -> dcc.Graph:
-    """Curva promedio de ratios Mn/M1 con etiquetas en cada punto."""
+    """Curva promedio de ratios Mn/M1. Traza sólida = actuals, punteada = forecast."""
+
+    # Último lifecycle_month donde al menos un cohorte aún tiene datos reales
+    last_act_lm: "int | None" = None
+    if fc_mask is not None and not fc_mask.empty:
+        actual_lms = [int(lm) for lm in fc_mask.columns if not bool(fc_mask[lm].all())]
+        if actual_lms:
+            last_act_lm = max(actual_lms)
 
     lms_s = sorted(
         k for k, v in simple_ratio_avgs.items()
@@ -292,39 +302,50 @@ def _build_chart(
         if v is not None and not np.isnan(v) and k <= _CHART_MAX_LM
     )
 
-    title = _chart_title(metric, pais)
+    if last_act_lm is not None:
+        lms_s_act = [lm for lm in lms_s if lm <= last_act_lm]
+        lms_s_fc  = [lm for lm in lms_s if lm >= last_act_lm]  # solapan en last_act_lm para conectar
+        lms_w_act = [lm for lm in lms_w if lm <= last_act_lm]
+        lms_w_fc  = [lm for lm in lms_w if lm >= last_act_lm]
+    else:
+        lms_s_act, lms_s_fc = lms_s, []
+        lms_w_act, lms_w_fc = lms_w, []
 
+    title = _chart_title(metric, pais)
     fig = go.Figure()
 
-    if lms_s:
-        ys = [simple_ratio_avgs[lm] for lm in lms_s]
+    def _add_trace(lms, avgs, name, color, width, is_fc):
+        if not lms:
+            return
+        ys = [avgs[lm] for lm in lms]
         fig.add_trace(go.Scatter(
-            x=lms_s,
-            y=ys,
-            name="Avg Aritmético",
+            x=lms, y=ys,
+            name=name,
             mode="lines+markers+text",
-            line=dict(color="#00C97A", width=2),
-            marker=dict(size=5, color="#00C97A"),
+            line=dict(color=color, width=width, dash="dash" if is_fc else "solid"),
+            marker=dict(size=5, color=color, symbol="diamond-open" if is_fc else "circle"),
             text=[f"<b>{v:.0%}</b>" for v in ys],
             textposition="top center",
-            textfont=dict(size=9, color="#00C97A"),
+            textfont=dict(size=9, color=color),
+            showlegend=not is_fc,
         ))
 
-    if lms_w:
-        yw = [weighted_ratio_avgs[lm] for lm in lms_w]
-        fig.add_trace(go.Scatter(
-            x=lms_w,
-            y=yw,
-            name="Avg Ponderado",
-            mode="lines+markers+text",
-            line=dict(color="#4827BE", width=2.5),
-            marker=dict(size=5, color="#4827BE"),
-            text=[f"<b>{v:.0%}</b>" for v in yw],
-            textposition="top center",
-            textfont=dict(size=9, color="#4827BE"),
-        ))
+    _add_trace(lms_s_act, simple_ratio_avgs,   "Avg Aritmético", "#00C97A", 2,   False)
+    _add_trace(lms_s_fc,  simple_ratio_avgs,   "Avg Aritmético", "#00C97A", 2,   True)
+    _add_trace(lms_w_act, weighted_ratio_avgs, "Avg Ponderado",  "#4827BE", 2.5, False)
+    _add_trace(lms_w_fc,  weighted_ratio_avgs, "Avg Ponderado",  "#4827BE", 2.5, True)
 
-    # Líneas verticales en hitos dentro del rango
+    # Línea vertical en el límite actual/forecast
+    if last_act_lm is not None and (lms_s_fc or lms_w_fc):
+        fig.add_vline(
+            x=last_act_lm + 0.5,
+            line=dict(color="#FF8C00", width=1.5, dash="dot"),
+            annotation_text=" Forecast →",
+            annotation_position="top right",
+            annotation_font=dict(color="#FF8C00", size=11),
+        )
+
+    # Líneas verticales en hitos
     all_lm_present = set(simple_ratio_avgs) | set(weighted_ratio_avgs)
     for ms in sorted(_MILESTONES):
         if ms in all_lm_present and ms <= _CHART_MAX_LM:
@@ -410,6 +431,7 @@ def _build_heatmap(
     is_rev: bool,
     title: str = "Valores suavizados por cohorte",
     seller_data: "dict | None" = None,
+    fc_mask: "pd.DataFrame | None" = None,
 ) -> html.Div:
     """
     Tabla agrupada por año (collapsible con <details>/<summary> nativo).
@@ -502,8 +524,17 @@ def _build_heatmap(
             for lm in all_lm:
                 raw_val = smooth_idx.loc[cohort_ts, lm] if lm in smooth_idx.columns else np.nan
                 v = float(raw_val) if pd.notna(raw_val) else None
+                _is_fc = (
+                    fc_mask is not None
+                    and lm in fc_mask.columns
+                    and cohort_ts in fc_mask.index
+                    and bool(fc_mask.loc[cohort_ts, lm])
+                )
                 if v is not None:
-                    style = {**_num_s(lm), **_cell_style(v, q1, q2, q3)}
+                    if _is_fc:
+                        style = {**_num_s(lm), "background": _FC_BG, "color": _FC_FG}
+                    else:
+                        style = {**_num_s(lm), **_cell_style(v, q1, q2, q3)}
                     if lm in _MILESTONES:
                         style["fontWeight"] = "700"
                     text = _fmt(v, is_rev)
@@ -585,8 +616,23 @@ def _build_heatmap(
         className="ct-wrap",
     )
 
+    _fc_legend = []
+    if fc_mask is not None and bool(fc_mask.values.any()):
+        _fc_legend = [html.Div([
+            html.Span("", style={
+                "display": "inline-block", "width": "11px", "height": "11px",
+                "background": _FC_BG, "border": f"1.5px solid {_FC_FG}",
+                "borderRadius": "2px", "verticalAlign": "middle",
+                "marginRight": "5px",
+            }),
+            html.Span("Forecast", style={
+                "color": _FC_FG, "fontSize": "11px", "verticalAlign": "middle",
+            }),
+        ], style={"padding": "0 0 6px 0"})]
+
     return html.Div([
         html.H3(title, className="section-title"),
+        *_fc_legend,
         table,
     ], className="page-section card")
 
@@ -601,6 +647,7 @@ def _build_ratio_heatmap(
     all_lm: list,
     title: str = "Ratios NDR/ODR por cohorte (Mn / M1)",
     deselected_years: "set | None" = None,
+    fc_mask: "pd.DataFrame | None" = None,
 ) -> html.Div:
     """
     Tabla de ratios Mn / M1 por cohorte, agrupada por año (ascendente).
@@ -736,9 +783,20 @@ def _build_ratio_heatmap(
             for lm in all_lm:
                 raw_val = ratio_df.loc[cohort_ts, lm] if lm in ratio_df.columns else np.nan
                 v = float(raw_val) if pd.notna(raw_val) else None
+                _is_fc = (
+                    not is_deselected
+                    and fc_mask is not None
+                    and lm in fc_mask.columns
+                    and cohort_ts in fc_mask.index
+                    and bool(fc_mask.loc[cohort_ts, lm])
+                )
                 if v is not None:
                     if is_deselected:
                         style = {**_num_s(lm), "background": cell_bg, "color": cell_fg}
+                    elif _is_fc:
+                        style = {**_num_s(lm), "background": _FC_BG, "color": _FC_FG}
+                        if lm in _MILESTONES:
+                            style["fontWeight"] = "700"
                     else:
                         style = {**_num_s(lm), **_cell_style(v, q1, q2, q3)}
                         if lm in _MILESTONES:
@@ -795,8 +853,23 @@ def _build_ratio_heatmap(
         className="ct-wrap",
     )
 
+    _fc_legend = []
+    if fc_mask is not None and bool(fc_mask.values.any()):
+        _fc_legend = [html.Div([
+            html.Span("", style={
+                "display": "inline-block", "width": "11px", "height": "11px",
+                "background": _FC_BG, "border": f"1.5px solid {_FC_FG}",
+                "borderRadius": "2px", "verticalAlign": "middle",
+                "marginRight": "5px",
+            }),
+            html.Span("Forecast", style={
+                "color": _FC_FG, "fontSize": "11px", "verticalAlign": "middle",
+            }),
+        ], style={"padding": "0 0 6px 0"})]
+
     return html.Div([
         html.H3(title, className="section-title"),
+        *_fc_legend,
         table,
     ], className="page-section card")
 
@@ -815,11 +888,12 @@ def _build_ratio_heatmap(
     Input("ndr-fx-mxn",    "value"),
     Input("ndr-segmentos", "value"),
     Input("ndr-churn",     "value"),
+    Input("ndr-forecast",  "value"),
     Input("url",           "pathname"),
     State("cohort-overrides", "data"),
     prevent_initial_call=False,
 )
-def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, pathname, cohort_overrides):
+def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_on, pathname, cohort_overrides):
     if pathname != "/ndr":
         raise PreventUpdate
 
@@ -867,7 +941,7 @@ def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, pathname,
     df_raw = df_raw.copy()
     df_raw["lifecycle_month"] = df_raw["lifecycle_month"] - 1
 
-    # Raw pivot (before smoothing) — for verification table
+    # Raw pivot (actuals only — para tabla "Sin suavizar")
     raw_pivot = (
         df_raw.groupby(["cohort_month", "lifecycle_month"])[val_col]
         .sum()
@@ -876,12 +950,98 @@ def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, pathname,
     raw_pivot.index = pd.to_datetime(raw_pivot.index)
     raw_pivot.columns = [int(c) for c in raw_pivot.columns]
 
-    smooth_df, weights = calc_cohort_matrix(df_raw, val_col)
+    # Máximo lifecycle_month actual por cohorte (antes de extender con forecast)
+    actual_max_lm = df_raw.groupby("cohort_month")["lifecycle_month"].max()
+    actual_max_lm.index = pd.to_datetime(actual_max_lm.index)
+
+    # Extender con forecast (solo ODR — forecast solo cubre órdenes)
+    forecast_on = forecast_on or "no"
+    forecast_active = (forecast_on == "si") and not is_rev
+    df_combined = df_raw
+    fc_agg = pd.DataFrame()        # forecast agregado por cohorte × lm
+    df_fc_sellers = pd.DataFrame() # forecast con seller_name para drill-down
+
+    if forecast_active:
+        df_fc = load_forecast(filters)
+        if not df_fc.empty:
+            df_fc = apply_cohort_overrides(df_fc, cohort_overrides, "forecast_month")
+            df_fc = df_fc.copy()
+            df_fc["cohort_month"] = pd.to_datetime(df_fc["cohort_month"])
+            df_fc["lifecycle_month"] = df_fc["lifecycle_month"] - 1
+            df_fc = df_fc[df_fc["lifecycle_month"] >= 1]
+            df_fc = df_fc[df_fc["cohort_month"].isin(actual_max_lm.index)]
+            df_fc = df_fc.merge(
+                actual_max_lm.rename("_max_lm"),
+                left_on="cohort_month", right_index=True,
+                how="left",
+            )
+            df_fc = df_fc[df_fc["lifecycle_month"] > df_fc["_max_lm"]].drop(columns=["_max_lm"])
+            if not df_fc.empty:
+                fc_agg = (
+                    df_fc.groupby(["cohort_month", "lifecycle_month"])["forecasted_orders"]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={"forecasted_orders": val_col})
+                )
+                # Seller names desde actuals para el drill-down
+                _seller_nm = (
+                    df_raw.drop_duplicates("seller_id")
+                    .set_index("seller_id")["seller_name"]
+                )
+                _fc_s = df_fc.copy()
+                _fc_s["seller_name"] = (
+                    _fc_s["seller_id"].map(_seller_nm)
+                    .fillna(_fc_s["seller_id"].astype(str))
+                )
+                _fc_s = _fc_s.rename(columns={"forecasted_orders": val_col})
+                df_fc_sellers = _fc_s[
+                    ["cohort_month", "seller_id", "seller_name", "lifecycle_month", val_col]
+                ]
+                df_combined = pd.concat(
+                    [df_raw[["cohort_month", "lifecycle_month", val_col]], fc_agg],
+                    ignore_index=True,
+                )
+
+    smooth_df, weights = calc_cohort_matrix(df_combined, val_col)
+
+    # Máscara forecast para smooth: True donde lm > último real del cohorte
+    fc_mask = pd.DataFrame(False, index=smooth_df.index, columns=smooth_df.columns)
+    if forecast_active and not smooth_df.empty:
+        for cohort_ts in smooth_df.index:
+            max_lm = int(actual_max_lm.get(pd.Timestamp(cohort_ts), 0) or 0)
+            fc_mask.loc[cohort_ts, [lm for lm in smooth_df.columns if int(lm) > max_lm]] = True
+
+    # Raw pivot para display (actuals + forecast cuando está activo)
+    if not fc_agg.empty:
+        _raw_disp = pd.concat(
+            [df_raw[["cohort_month", "lifecycle_month", val_col]], fc_agg],
+            ignore_index=True,
+        )
+        raw_pivot_display = (
+            _raw_disp.groupby(["cohort_month", "lifecycle_month"])[val_col]
+            .sum()
+            .unstack("lifecycle_month")
+        )
+        raw_pivot_display.index = pd.to_datetime(raw_pivot_display.index)
+        raw_pivot_display.columns = [int(c) for c in raw_pivot_display.columns]
+    else:
+        raw_pivot_display = raw_pivot
+
+    # Máscara forecast para tabla raw (mismo criterio)
+    fc_mask_raw = pd.DataFrame(False, index=raw_pivot_display.index, columns=raw_pivot_display.columns)
+    if forecast_active and not raw_pivot_display.empty:
+        for cohort_ts in raw_pivot_display.index:
+            max_lm = int(actual_max_lm.get(pd.Timestamp(cohort_ts), 0) or 0)
+            fc_mask_raw.loc[cohort_ts, [lm for lm in raw_pivot_display.columns if int(lm) > max_lm]] = True
 
     if smooth_df.empty:
         return [], [], _empty_ui, None
 
-    all_lm = sorted(set(smooth_df.columns.tolist()) | set(raw_pivot.columns.tolist()))
+    all_lm = sorted(
+        set(smooth_df.columns.tolist())
+        | set(raw_pivot_display.columns.tolist())
+        | set(raw_pivot.columns.tolist())
+    )
 
     # ── Etiquetas de unidad para títulos de tablas ────────────────────────────
     unit_sfx = f" — {unit}" if is_rev else ""   # ej. " — MM COP" o "" para órdenes
@@ -898,15 +1058,29 @@ def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, pathname,
                     if float(w) >= threshold]
 
     # ── Construir tablas raw y suavizado ──────────────────────────────────────
-    seller_data = _compute_seller_data(df_raw, val_col, top_n=5)
+    if not df_fc_sellers.empty:
+        _df_for_sellers = pd.concat([
+            df_raw[["cohort_month", "seller_id", "seller_name", "lifecycle_month", val_col]],
+            df_fc_sellers,
+        ], ignore_index=True)
+        seller_data = _compute_seller_data(_df_for_sellers, val_col, top_n=5)
+    else:
+        seller_data = _compute_seller_data(df_raw, val_col, top_n=5)
     heatmap_raw = _build_heatmap(
-        raw_pivot, {}, {}, all_lm, is_rev,
+        raw_pivot_display, {}, {}, all_lm, is_rev,
         title=f"Sin suavizar{unit_sfx}",
         seller_data=seller_data,
+        fc_mask=fc_mask_raw if forecast_active else None,
+    )
+    abs_title = (
+        f"Suavizado forward 3m + Forecast{unit_sfx}"
+        if forecast_active else
+        f"Suavizado forward 3m{unit_sfx}"
     )
     heatmap_abs = _build_heatmap(
         smooth_df, {}, {}, all_lm, is_rev,
-        title=f"Suavizado forward 3m{unit_sfx}",
+        title=abs_title,
+        fc_mask=fc_mask if forecast_active else None,
     )
 
     # ── Serializar datos para ratio section y exportación ────────────────────
@@ -917,15 +1091,23 @@ def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, pathname,
     raw_serial = raw_pivot.copy()
     raw_serial.index = raw_serial.index.astype(str)
 
+    fc_mask_data: dict = {}
+    if forecast_active and not fc_mask.empty:
+        _fm = fc_mask.copy()
+        _fm.index = _fm.index.astype(str)
+        fc_mask_data = _fm.to_dict()
+
     store = {
-        "smooth":  smooth_serial.to_dict(),
-        "raw":     raw_serial.to_dict(),
-        "weights": weights_serial.to_dict(),
-        "all_lm":  all_lm,
-        "is_rev":  is_rev,
-        "metric":  metric,
-        "pais":    pais or "CONSOLIDADO",
-        "unit":    unit,
+        "smooth":           smooth_serial.to_dict(),
+        "raw":              raw_serial.to_dict(),
+        "weights":          weights_serial.to_dict(),
+        "all_lm":           all_lm,
+        "is_rev":           is_rev,
+        "metric":           metric,
+        "pais":             pais or "CONSOLIDADO",
+        "unit":             unit,
+        "forecast_active":  forecast_active,
+        "fc_mask":          fc_mask_data,
     }
 
     return year_options, year_values, html.Div([heatmap_raw, heatmap_abs]), store
@@ -945,7 +1127,7 @@ def update_ratio_section(store, selected_years):
     if not store:
         raise PreventUpdate
 
-    smooth_df, raw_pivot, weights, all_lm, is_rev = _store_to_smooth(store)
+    smooth_df, raw_pivot, weights, all_lm, is_rev, fc_mask = _store_to_smooth(store)
     metric = store.get("metric", "orders")
     pais   = store.get("pais",   "CONSOLIDADO")
     unit   = store.get("unit",   "")
@@ -990,19 +1172,20 @@ def update_ratio_section(store, selected_years):
             )
 
     # ── Construir chart, promedios y tabla ratio ──────────────────────────────
-    chart    = _build_chart(simple_ratio_avgs, weighted_ratio_avgs, metric, pais)
+    chart    = _build_chart(simple_ratio_avgs, weighted_ratio_avgs, metric, pais, fc_mask=fc_mask)
     averages = _build_averages_table(simple_ratio_avgs, weighted_ratio_avgs, all_lm, metric, pais)
 
     tipo     = _TIPO_LBL.get(metric, "ODR")
     geo      = _GEO_LBL.get(pais, pais)
     heatmap_ratio = _build_ratio_heatmap(
-        smooth_df,         # tabla completa (todos los años, algunos grisados)
+        smooth_df,
         weights,
         simple_ratio_avgs,
         weighted_ratio_avgs,
         all_lm,
         title=f"Ratios {tipo} — {geo} (Mn / M1)",
         deselected_years=deselected,
+        fc_mask=fc_mask,
     )
 
     return chart, averages, heatmap_ratio
@@ -1010,8 +1193,10 @@ def update_ratio_section(store, selected_years):
 
 # ── Exportación a Excel ───────────────────────────────────────────────────────
 
-def _store_to_smooth(store: dict) -> "tuple[pd.DataFrame, pd.DataFrame, pd.Series, list, bool]":
-    """Reconstruye smooth_df, raw_pivot, weights, all_lm, is_rev desde el store."""
+def _store_to_smooth(
+    store: dict,
+) -> "tuple[pd.DataFrame, pd.DataFrame, pd.Series, list, bool, pd.DataFrame | None]":
+    """Reconstruye smooth_df, raw_pivot, weights, all_lm, is_rev, fc_mask desde el store."""
     smooth_df = pd.DataFrame(store["smooth"])
     smooth_df.index = pd.to_datetime(smooth_df.index)
     smooth_df.columns = [int(c) for c in smooth_df.columns]
@@ -1024,9 +1209,18 @@ def _store_to_smooth(store: dict) -> "tuple[pd.DataFrame, pd.DataFrame, pd.Serie
     weights = pd.Series(store["weights"])
     weights.index = pd.to_datetime(weights.index)
 
-    all_lm  = [int(x) for x in store["all_lm"]]
-    is_rev  = store["is_rev"]
-    return smooth_df, raw_pivot, weights, all_lm, is_rev
+    all_lm = [int(x) for x in store["all_lm"]]
+    is_rev = store["is_rev"]
+
+    fc_mask = None
+    if store.get("forecast_active") and store.get("fc_mask"):
+        _fm = pd.DataFrame(store["fc_mask"])
+        if not _fm.empty:
+            _fm.index = pd.to_datetime(_fm.index)
+            _fm.columns = [int(c) for c in _fm.columns]
+            fc_mask = _fm
+
+    return smooth_df, raw_pivot, weights, all_lm, is_rev, fc_mask
 
 
 def _df_to_excel(buf: io.BytesIO, sheets: "dict[str, pd.DataFrame]") -> None:
@@ -1047,7 +1241,7 @@ def export_ndr(n_clicks, store, selected_years):
     if not store:
         raise PreventUpdate
 
-    smooth_df, raw_pivot, weights, all_lm, is_rev = _store_to_smooth(store)
+    smooth_df, raw_pivot, weights, all_lm, is_rev, _fc_mask = _store_to_smooth(store)
     smooth_df.index = pd.to_datetime(smooth_df.index)
     weights.index   = pd.to_datetime(weights.index)
 

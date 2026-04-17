@@ -32,6 +32,7 @@ _TTL = int(os.environ.get("CACHE_TTL_SECONDS", 1800))  # 30 min default
 
 _orders_cache: TTLCache = TTLCache(maxsize=50, ttl=_TTL)
 _revenue_cache: TTLCache = TTLCache(maxsize=50, ttl=_TTL)
+_revenue_raw_cache: TTLCache = TTLCache(maxsize=4, ttl=_TTL)   # raw sin filtros (V2)
 _forecast_cache: TTLCache = TTLCache(maxsize=50, ttl=_TTL)
 _status_cache: TTLCache = TTLCache(maxsize=4, ttl=3600)   # 1 h — para landing
 _lock = threading.Lock()
@@ -134,19 +135,30 @@ def _inject_filters(sql: str, filters: dict) -> str:
 
 # ── Ejecución ────────────────────────────────────────────────────────────────
 
-def _run_query(sql: str) -> pd.DataFrame:
-    """Ejecuta una query en Redshift y retorna un DataFrame."""
-    try:
-        conn = get_connection()
-        with conn.cursor() as cur:
-            cur.execute(sql)
-            cols = [desc[0] for desc in cur.description]
-            rows = cur.fetchall()
-        conn.close()
-        return pd.DataFrame(rows, columns=cols)
-    except Exception as exc:
-        logger.error("Error ejecutando query en Redshift: %s", exc)
-        return pd.DataFrame()
+def _run_query(sql: str, _retries: int = 2) -> pd.DataFrame:
+    """Ejecuta una query en Redshift con retry automático en errores de conexión."""
+    last_exc: Exception | None = None
+    for attempt in range(1, _retries + 2):
+        try:
+            conn = get_connection()
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                cols = [desc[0] for desc in cur.description]
+                rows = cur.fetchall()
+            conn.close()
+            return pd.DataFrame(rows, columns=cols)
+        except Exception as exc:
+            last_exc = exc
+            is_conn_err = any(
+                kw in str(exc).lower()
+                for kw in ("connection", "communication", "10054", "broken pipe", "reset")
+            )
+            if is_conn_err and attempt <= _retries:
+                logger.warning("Redshift connection error (intento %d/%d): %s — reintentando…", attempt, _retries + 1, exc)
+                continue
+            break
+    logger.error("Error ejecutando query en Redshift: %s", last_exc)
+    return pd.DataFrame()
 
 
 def _read_sql(filename: str) -> str:
@@ -188,16 +200,47 @@ def load_orders(filters: dict | None = None) -> pd.DataFrame:
     return df
 
 
+def _load_revenue_raw() -> pd.DataFrame:
+    """
+    Carga todo el revenue (V2 query) sin filtros. Resultado cacheado como base
+    para los filtros en memoria de load_revenue().
+    """
+    key = "revenue_raw"
+    with _lock:
+        if key in _revenue_raw_cache:
+            return _revenue_raw_cache[key]
+
+    sql = _read_sql("02_inputs_revenue_V2.sql")
+    df = _run_query(sql)
+
+    if not df.empty:
+        df["cohort_month"]    = pd.to_datetime(df["cohort_month"])
+        df["revenue_month"]   = pd.to_datetime(df["revenue_month"])
+        df["lifecycle_month"] = pd.to_numeric(df["lifecycle_month"], errors="coerce").astype("Int64")
+        df["churn_flag"]      = pd.to_numeric(df["churn_flag"], errors="coerce").fillna(0).astype(int)
+        for col in ["total_revenue", "fulfillment_revenue", "d2c_fulfillment_revenue",
+                    "b2b_fulfillment_revenue", "returns_revenue", "warehousing_revenue",
+                    "inbound_revenue", "saas_revenue", "external_revenue",
+                    "adjecencies_revenue", "credit_notes_amount"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    with _lock:
+        _revenue_raw_cache[key] = df
+
+    return df
+
+
 def load_revenue(filters: dict | None = None) -> pd.DataFrame:
     """
-    Carga revenue P&L por seller × mes (dual source: histórico + Redshift).
+    Revenue P&L por seller × mes — filtros aplicados en memoria sobre V2 query.
 
     Columnas del DataFrame:
         seller_id, seller_name, segment, country_id, country_name,
         cohort_month, churn_flag, revenue_month, lifecycle_month,
-        fulfillment_revenue, returns_revenue, warehousing_revenue,
-        inbound_revenue, saas_revenue, external_revenue,
-        adjecencies_revenue, credit_notes_adjustment, total_revenue
+        fulfillment_revenue, d2c_fulfillment_revenue, b2b_fulfillment_revenue,
+        returns_revenue, warehousing_revenue, inbound_revenue, saas_revenue,
+        external_revenue, adjecencies_revenue, credit_notes_amount, total_revenue
     """
     filters = _merge_filters(filters)
     key = ("revenue",) + _cache_key(filters)
@@ -206,15 +249,44 @@ def load_revenue(filters: dict | None = None) -> pd.DataFrame:
         if key in _revenue_cache:
             return _revenue_cache[key]
 
-    sql = _read_sql("02_inputs_revenue.sql")
-    sql = _inject_filters(sql, filters)
-    df = _run_query(sql)
+    raw = _load_revenue_raw()
+    if raw.empty:
+        with _lock:
+            _revenue_cache[key] = raw
+        return raw
 
-    if not df.empty:
-        df["cohort_month"] = pd.to_datetime(df["cohort_month"])
-        df["revenue_month"] = pd.to_datetime(df["revenue_month"])
-        df["total_revenue"] = pd.to_numeric(df["total_revenue"], errors="coerce").fillna(0)
-        df["lifecycle_month"] = pd.to_numeric(df["lifecycle_month"], errors="coerce").astype("Int64")
+    df = raw.copy()
+
+    # ── Segmentos (con alias Tiny = Starter) ──────────────────────────────────
+    _SEGMENT_ALIASES = {"Starter": ["Starter", "Tiny"]}
+    segments = filters["segments"]
+    expanded: list[str] = []
+    for s in segments:
+        expanded.extend(_SEGMENT_ALIASES.get(s, [s]))
+    df = df[df["segment"].isin(expanded)]
+
+    # ── País ──────────────────────────────────────────────────────────────────
+    if filters["country_id"] is not None:
+        df = df[df["country_id"] == filters["country_id"]]
+
+    # ── Churn ─────────────────────────────────────────────────────────────────
+    if not filters["include_churn"]:
+        df = df[df["churn_flag"] == 0]
+
+    # ── Tipo de orden: recomponer total_revenue con el split D2C o B2B ────────
+    order_type = filters["order_type"]
+    if order_type in ("D2C", "B2B") and not df.empty:
+        fulf_col = "d2c_fulfillment_revenue" if order_type == "D2C" else "b2b_fulfillment_revenue"
+        other = ["returns_revenue", "warehousing_revenue", "inbound_revenue",
+                 "saas_revenue", "external_revenue", "adjecencies_revenue"]
+        df = df.copy()
+        df["total_revenue"] = df[[fulf_col] + [c for c in other if c in df.columns]].sum(axis=1)
+
+    # ── Credit notes ──────────────────────────────────────────────────────────
+    if filters["include_credit_notes"] and "credit_notes_amount" in df.columns and not df.empty:
+        if order_type not in ("D2C", "B2B"):
+            df = df.copy()
+        df["total_revenue"] = df["total_revenue"] + df["credit_notes_amount"]
 
     with _lock:
         _revenue_cache[key] = df
@@ -364,5 +436,6 @@ def clear_cache() -> None:
     with _lock:
         _orders_cache.clear()
         _revenue_cache.clear()
+        _revenue_raw_cache.clear()
         _forecast_cache.clear()
         _status_cache.clear()

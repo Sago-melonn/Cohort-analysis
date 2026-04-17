@@ -304,6 +304,8 @@ def ndr_filters() -> html.Div:
                 _sep(),
                 _g_churn("ndr"),
                 _sep(),
+                _g_forecast("ndr"),
+                _sep(),
                 html.Div([
                     _lbl("Años"),
                     dcc.Checklist(
