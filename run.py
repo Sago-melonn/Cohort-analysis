@@ -22,6 +22,7 @@ import callbacks.cb_inputs        # noqa: F401
 import callbacks.cb_nor           # noqa: F401
 import callbacks.cb_ndr           # noqa: F401
 import callbacks.cb_nnr           # noqa: F401
+import callbacks.cb_rolling       # noqa: F401
 import callbacks.cb_config        # noqa: F401
 
 
@@ -30,15 +31,15 @@ import callbacks.cb_config        # noqa: F401
 # Cuando el usuario llegue a Inputs los datos ya estarán en caché.
 
 def _warmup():
-    from data.data_loader import load_orders, load_revenue
-    logger.info("Cache warm-up: iniciando precarga de orders y revenue...")
+    from data.data_loader import (
+        _load_orders_raw, _load_revenue_raw, _load_forecast_raw, load_budget_nnr,
+    )
+    logger.info("Cache warm-up: cargando datos raw...")
     try:
-        t_orders  = threading.Thread(target=load_orders,  daemon=True)
-        t_revenue = threading.Thread(target=load_revenue, daemon=True)
-        t_orders.start()
-        t_revenue.start()
-        t_orders.join()
-        t_revenue.join()
+        _load_orders_raw()
+        _load_revenue_raw()
+        _load_forecast_raw()
+        load_budget_nnr()
         logger.info("Cache warm-up: completado.")
     except Exception as exc:
         logger.warning("Cache warm-up falló (no crítico): %s", exc)

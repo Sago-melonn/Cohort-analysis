@@ -323,11 +323,61 @@ def ndr_filters() -> html.Div:
     ], className="filter-panel")
 
 
+def rolling_filters() -> html.Div:
+    return html.Div([
+        # ── Bloque Generales ──────────────────────────────────────
+        html.Div([
+            html.Span("Generales", className="page-filter-label"),
+            html.Div([
+                _g_pais("rf"),
+            ], className="filter-bar"),
+        ], className="filter-panel-row"),
+        # ── Bloque Adicionales ────────────────────────────────────
+        html.Div([
+            html.Span("Adicionales", className="page-filter-label"),
+            html.Div([
+                html.Div([
+                    _lbl("Escenario"),
+                    _radio("rf-escenario", [
+                        {"label": 'Base ("Junta")', "value": "base"},
+                        {"label": "Bear",           "value": "bear"},
+                    ], "base"),
+                ], className="fb-group"),
+            ], className="filter-bar"),
+        ], className="filter-panel-row"),
+    ], className="filter-panel")
+
+
 def nnr_filters() -> html.Div:
     return html.Div([
-        _g_metric("nnr"),
-        _sep(),
-        _g_pais("nnr"),
-        _sep(),
-        _g_fx_only("nnr"),
-    ], className="filter-bar")
+        # ── Bloque Generales ──────────────────────────────────────
+        html.Div([
+            html.Span("Generales", className="page-filter-label"),
+            html.Div([
+                _g_pais("nnr"),
+                _sep(),
+                _g_moneda("nnr"),
+            ], className="filter-bar"),
+        ], className="filter-panel-row"),
+        # ── Bloque Adicionales ────────────────────────────────────
+        html.Div([
+            html.Span("Adicionales", className="page-filter-label"),
+            html.Div([
+                html.Div([
+                    _lbl("Métrica"),
+                    _radio("nnr-metric", [
+                        {"label": "NNO — Órdenes", "value": "orders"},
+                        {"label": "NNR — Revenue", "value": "revenue"},
+                    ], "orders"),
+                ], className="fb-group"),
+                _sep(),
+                html.Div([
+                    _lbl("Escenario"),
+                    _radio("nnr-escenario", [
+                        {"label": 'Base ("Junta")', "value": "base"},
+                        {"label": "Bear",           "value": "bear"},
+                    ], "base"),
+                ], className="fb-group"),
+            ], className="filter-bar"),
+        ], className="filter-panel-row"),
+    ], className="filter-panel")

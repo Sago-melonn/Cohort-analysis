@@ -402,9 +402,10 @@ total_revenue =
 | App v2 — Landing page | ✅ Hecho | Logo, mes cerrado/parcial, botón "Entrar al Dashboard" |
 | App v2 — Scaffold (layout + sidebar + routing) | ✅ Hecho | Shell flex row, sidebar sticky, routing con PreventUpdate |
 | App v2 — Vista Inputs (heatmap + KPIs) | ✅ Hecho | Tabla custom 2 niveles, drill-down inline, KPIs, sticky filter bar |
-| App v2 — Vista NOR/NRR | ✅ Hecho | KPIs + gráfico Plotly + trazabilidad + sección Churn (bar chart + tabla TOP10) — cb_nor.py |
+| App v2 — Vista NOR/NRR | ✅ Hecho | KPIs + Gráfico 1 (% Ratio) + Gráfico 2 (evolución absoluta base fija) + trazabilidad + Churn — cb_nor.py |
 | App v2 — Vista NDR/ODR | ✅ Hecho | Gráfico + tabla hitos + heatmap absolutos (agrupado año/mes) + tabla ratios Mn/M1 + exportación Excel 2 hojas — cb_ndr.py |
-| App v2 — Vista NNR/NNO | 🔴 Pendiente | Stub en cb_nnr.py |
+| App v2 — Vista NNR/NNO | ✅ Hecho | KPIs 2 filas, gráfico barras por mes desde 2025, tabla dual NNR+NNO con drill-down — cb_nnr.py |
+| App v2 — Rolling Forecast Total | ✅ Hecho | Órdenes reales + proyección + tabla cohortes por mes calendario — cb_rolling.py |
 | Deploy | 🔴 Pendiente | |
 
 ---
@@ -490,6 +491,22 @@ total_revenue =
 | 2026-04-16 | NDR/ODR: update_ratio_section callback separado — reacciona a ndr-store + ndr-year-select. Recalcula promedios solo con años activos; años excluidos se grisan en la tabla de ratios |
 | 2026-04-16 | Config /config: página nueva en sidebar (⚙). Override de cohorte por seller: buscar seller, asignar nueva cohorte, tabla con ✕ para eliminar. Persiste en dcc.Store(storage_type="local") |
 | 2026-04-16 | apply_cohort_overrides() en transforms.py: cambia cohort_month, recalcula lifecycle_month relativo a la nueva cohorte, descarta filas < M1 (período piloto). Aplica en NDR, NOR, Inputs |
+| 2026-04-25 | Arquitectura data_loader: patrón unificado raw-load + Python-filter para orders, revenue y forecast. Queries V2 sin params CTE (01_inputs_orders_V2.sql, 03_inputs_forecast_V2.sql). Warmup carga los 3 raw en paralelo al arrancar. Ningún cambio de filtro en UI dispara query a Redshift. |
+| 2026-04-25 | _apply_common_filters() en data_loader.py: función compartida que aplica segmento (con alias Tiny=Starter), país y churn sobre DataFrame ya cargado. |
+| 2026-04-25 | NOR/NRR: eliminado toggle Vista (% Ratio / Absoluto) del Gráfico 1 — siempre muestra % Ratio. Hover Gráfico 1 agrega "Cohortes hasta: [mes]" en texto negro para contexto del universo dinámico. |
+| 2026-04-25 | NOR/NRR: Gráfico 2 nuevo (siempre visible) — evolución absoluta universo fijo. "Base": universo fijo en corte_base (mismas cohortes toda la serie, _abs_fixed_universe()). "Todos": reutiliza smooth_num de la serie de retención. Insumo oficial del plan de negocio. |
+| 2026-04-25 | NOR/NRR: orden de secciones — Gráfico 1 → Trazabilidad → Gráfico 2 → Churn. La trazabilidad queda como soporte del Gráfico 1 antes del Gráfico 2. |
+| 2026-04-25 | NOR/NRR Gráfico 1: eje Y dinámico max(1.1, data_max × 1.15) — sin piso fijo de 200%. |
+| 2026-04-25 | NOR/NRR Gráfico 2: etiquetas siempre visibles en formato K (órdenes: "105K"; revenue: valor compacto en unidad del eje). Espacio Y × 1.25 para no cortar etiquetas. |
+| 2026-04-25 | NNR/NNO: KPIs reestructurados en 2 filas — kpi-container > kpi-section (NNR Revenue + NNO Órdenes). Siempre 4 cards por fila sin importar filtro de métrica. Subtítulo muestra rango YTD (ej. "Ene–Mar 2026"). |
+| 2026-04-25 | NNR/NNO: gráfico barras con colores por estado (completo #4827BE, parcial #9684E1, pendiente #D4C9F5). Rango X desde Ene 2025. Etiquetas mes+valor en negrilla. Leyenda simplificada: solo NNO/NNR + Budget Junta + Budget Bear. Etiquetas en bold en líneas de budget. |
+| 2026-04-25 | NNR/NNO: tabla dual NNR+NNO en una sola vista (9 columnas: Cohorte, Sts, Sellers, NNR(unit), Bud Short NNR, % NNR, NNO, Bud Short NNO, % NNO). ct-year-label con flecha ▶ rotable para drill-down. Encabezados multi-línea con whiteSpace:normal. |
+| 2026-04-25 | Rolling Forecast Total: nueva hoja /rolling en sidebar ("⟳ Rolling FC"). Solo órdenes. |
+| 2026-04-25 | Rolling Forecast: gráfico línea real (morado sólido) + forecast (naranja punteado), conectados en el mes de corte. Rango X fijo Ene 2025–Dic 2026, ticks mensuales. Etiquetas en K con offset y_pad=5% para separar de la línea. cliponaxis=False para evitar cortes. |
+| 2026-04-25 | Rolling Forecast: lógica cohortes existentes = NNO × seasonal_factor; cohortes budget (posterior al último status) = budget_NNO × 15% en M1, × sf en M2+. Factores estacionales: COL {Nov,Dec}×1.4, MEX {May,Nov,Dec}×1.4. Consolidado usa promedio ponderado por sellers por país. |
+| 2026-04-25 | Rolling Forecast: tabla pivot cohortes × meses calendario (Ene 2025–Dic 2026). Filas: Year→Q→Mes→Seller (html.Details). Columnas pasadas con header oscuro #1A1659, columnas forecast con header #7059B0 y fondo celda #FFF9F4. Total al final. |
+| 2026-04-25 | Rolling Forecast: KPI card única "Dic '26 YoY Growth" — siempre 3 cards (Consolidado, Colombia, México) independiente del filtro de país. Calcula Dec 2025 real vs Dec 2026 forecast para cada geo. |
+| 2026-04-25 | run.py warmup: cambiado de 4 threads paralelos a llamadas secuenciales dentro del daemon thread. Eliminaba contención de conexiones Redshift. |
 
 ---
 
@@ -512,6 +529,31 @@ total_revenue =
 ---
 
 ## 💬 NOTAS DE SESIÓN
+
+### Sesión 2026-04-25 (parte 2)
+- **Vista NNR/NNO completada:**
+  - KPIs: 2 filas siempre visibles (`kpi-container` > `kpi-section`). Fila NNR Revenue (4 cards) + fila NNO Órdenes (4 cards). Subtítulo con rango YTD del período.
+  - Gráfico: barras por mes desde Ene 2025, colores por estado (completo/parcial/pendiente), etiquetas mes+valor en bold. Leyenda simplificada. Líneas de budget con etiquetas en bold en su color.
+  - Tabla: 9 columnas duales NNR+NNO en una sola vista. Drill-down con flecha ▶ visible via CSS `ct-year-label`. Headers multi-línea resueltos con `whiteSpace:normal`.
+- **Rolling Forecast Total — nueva hoja `/rolling`:**
+  - KPIs: 3 cards fijas (Consolidado, Colombia, México) con YoY Growth Dic '26 vs Dic '25. Calculadas independiente del filtro de país — cada geo corre su propio `_compute_data` sobre datos cacheados.
+  - Gráfico: línea real (morado) + forecast (naranja punteado), rango Ene 2025–Dic 2026, ticks mensuales forzados, etiquetas en K con offset vertical (`y + 5% del máximo`) para separarse de la línea.
+  - Tabla: pivot cohortes × meses calendario (24 columnas). Headers pasados = oscuro, headers forecast = lila. Drill-down Year→Q→Mes→Seller vía `html.Details`.
+  - Lógica forecast: cohortes existentes usan NNO × sf estacional; cohortes budget usan `budget_NNO × 15%` (M1) y `budget_NNO × sf` (M2+).
+- **run.py warmup simplificado:** 4 threads paralelos → secuencial dentro del daemon thread. Elimina contención de conexiones a Redshift.
+- **Próximos pasos:**
+  - [ ] Deploy
+
+### Sesión 2026-04-25 (parte 1)
+- **Arquitectura data_loader refactorizada:** patrón raw-load + Python-filter unificado para orders, revenue y forecast. Antes solo revenue usaba este patrón; orders y forecast aún disparaban queries a Redshift por cada cambio de filtro. Ahora los 3 datasets se cargan raw al arrancar (warmup en run.py) y todos los filtros de UI se aplican en Python en memoria.
+- **Nuevos archivos SQL:** `01_inputs_orders_V2.sql` y `03_inputs_forecast_V2.sql` sin params CTE. `02_inputs_revenue_V2.sql` ya existía. El forecast V2 incluye `seller_name` y `churn_flag` que la versión anterior no tenía.
+- **Vista NOR/NRR mejorada:**
+  - Gráfico 1 siempre en % Ratio (eliminado toggle Absoluto — no agregaba valor con universo dinámico).
+  - Hover Gráfico 1 muestra "Cohortes hasta: [mes]" en negro, explicando el universo efectivo de cada punto.
+  - Gráfico 2 nuevo (evolución absoluta base fija): universo fijo en `corte_base` para modo "Base", smooth_num reutilizado para modo "Todos". Etiquetas en K. Insumo oficial plan de negocio.
+  - Orden secciones: Gráfico 1 → Trazabilidad → Gráfico 2 → Churn.
+  - Eje Y Gráfico 1 dinámico: `max(1.1, data_max × 1.15)` — se ajusta al dato real.
+- **Validación metodológica NOR:** confirmado que Denominador(Ene-2026) ≠ Numerador(Ene-2025) es correcto — cada mes usa universo consistente (mismo num y den) pero el universo varía entre meses por el cap M-13. La diferencia representa las órdenes de cohortes 2024 en Ene-2025.
 
 ### Sesión 2026-04-14
 - Gráfico NOR/NRR mejorado: título más alto (margen t=90), etiquetas en negrilla, forecast en naranja (#F97316) con etiquetas y hover completo

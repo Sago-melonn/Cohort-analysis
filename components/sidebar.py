@@ -11,7 +11,8 @@ _NAV_ITEMS = [
     {"label": "NRR / NOR", "icon": "↗", "href": "/nor",    "id": "nav-nor"},
     {"label": "NDR / ODR", "icon": "◈", "href": "/ndr",    "id": "nav-ndr"},
     {"label": "NNR / NNO", "icon": "★", "href": "/nnr",    "id": "nav-nnr"},
-    {"label": "Config",    "icon": "⚙", "href": "/config", "id": "nav-config"},
+    {"label": "Rolling FC", "icon": "⟳", "href": "/rolling", "id": "nav-rolling"},
+    {"label": "Config",    "icon": "⚙", "href": "/config",  "id": "nav-config"},
 ]
 
 

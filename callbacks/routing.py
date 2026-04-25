@@ -17,18 +17,20 @@ from callbacks.cb_inputs import inputs_layout
 from callbacks.cb_nor import nor_layout
 from callbacks.cb_ndr import ndr_layout
 from callbacks.cb_nnr import nnr_layout
+from callbacks.cb_rolling import rolling_layout
 
 _BASE   = "nav-item"
 _ACTIVE = "nav-item nav-active"
 
-# active_idx: índice del nav item activo (0-4), None = ninguno (landing)
+# active_idx: índice del nav item activo (0-5), None = ninguno (landing)
 _ROUTES = {
-    "/":       (landing_layout, None),
-    "/inputs": (inputs_layout,  0),
-    "/nor":    (nor_layout,     1),
-    "/ndr":    (ndr_layout,     2),
-    "/nnr":    (nnr_layout,     3),
-    "/config": (config_layout,  4),
+    "/":        (landing_layout, None),
+    "/inputs":  (inputs_layout,  0),
+    "/nor":     (nor_layout,     1),
+    "/ndr":     (ndr_layout,     2),
+    "/nnr":     (nnr_layout,     3),
+    "/rolling": (rolling_layout, 4),
+    "/config":  (config_layout,  5),
 }
 
 
@@ -38,10 +40,11 @@ _ROUTES = {
     Output("nav-nor",      "className"),
     Output("nav-ndr",      "className"),
     Output("nav-nnr",      "className"),
+    Output("nav-rolling",  "className"),
     Output("nav-config",   "className"),
     Input("url", "pathname"),
 )
 def route(pathname: str):
     layout_fn, active_idx = _ROUTES.get(pathname, (landing_layout, None))
-    nav_classes = [_ACTIVE if i == active_idx else _BASE for i in range(5)]
+    nav_classes = [_ACTIVE if i == active_idx else _BASE for i in range(6)]
     return (layout_fn(), *nav_classes)

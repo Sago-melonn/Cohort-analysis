@@ -516,9 +516,12 @@ details[open] > .year-summary::before { transform: rotate(90deg); }
 .ct-header-cell {
   color: #FFFFFF !important;
   font-weight: 700 !important;
-  font-size: 11px !important;
+  font-size: 10px !important;
   background: #1A1659 !important;
   letter-spacing: 0.03em;
+  white-space: normal !important;
+  line-height: 1.25 !important;
+  align-items: center !important;
 }
 
 /* Summary (dispara el Details) */
@@ -1137,6 +1140,28 @@ details[open] > .year-summary::before { transform: rotate(90deg); }
 .btn-primary:active {
   transform: translateY(0);
   box-shadow: 0 2px 8px rgba(72, 39, 190, 0.2);
+}
+
+/* ── KPI container — NNR/NNO dos filas ─────────────────────── */
+.kpi-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kpi-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kpi-row-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin: 0;
 }
 
 /* ── NOR/NRR Trazabilidad table (nt-*) ──────────────────────── */

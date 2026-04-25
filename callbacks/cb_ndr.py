@@ -17,7 +17,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import io
 
-from dash import Input, Output, State, callback, clientside_callback, dcc, html
+from dash import Input, Output, State, callback, clientside_callback, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 
 from components.page_filters import ndr_filters
@@ -891,9 +891,10 @@ def _build_ratio_heatmap(
     Input("ndr-forecast",  "value"),
     Input("url",           "pathname"),
     State("cohort-overrides", "data"),
+    State("ndr-year-select", "value"),
     prevent_initial_call=False,
 )
-def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_on, pathname, cohort_overrides):
+def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_on, pathname, cohort_overrides, current_years):
     if pathname != "/ndr":
         raise PreventUpdate
 
@@ -1054,8 +1055,18 @@ def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_
     threshold = _MIN_YEAR_WEIGHT_BY_UNIT.get(unit, 100.0)
     year_options = [{"label": str(y), "value": str(y)}
                     for y in sorted(year_weights_s.index)]
-    year_values  = [str(y) for y, w in year_weights_s.items()
-                    if float(w) >= threshold]
+    default_values = [str(y) for y, w in year_weights_s.items()
+                      if float(w) >= threshold]
+
+    # Si es carga inicial (url trigger) o no había selección previa → defaults
+    # Si el usuario ya había interactuado → preservar su selección
+    triggered = ctx.triggered_id if ctx.triggered else "url"
+    if triggered == "url" or not current_years:
+        year_values = default_values
+    else:
+        available = {opt["value"] for opt in year_options}
+        preserved = [y for y in current_years if y in available]
+        year_values = preserved if preserved else default_values
 
     # ── Construir tablas raw y suavizado ──────────────────────────────────────
     if not df_fc_sellers.empty:

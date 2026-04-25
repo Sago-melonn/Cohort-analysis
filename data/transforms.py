@@ -395,6 +395,131 @@ def apply_cohort_overrides(
     return df
 
 
+# ── NNR / NNO — Estacionalidad y cálculo por cohorte ─────────────────────────
+
+_SEASONAL_MONTHS: dict[int, set[int]] = {
+    1: {11, 12},        # COL: Nov, Dic
+    2: {5, 11, 12},     # MEX: May, Nov, Dic
+}
+_SEASONAL_FACTOR = 1.4
+
+
+def _season_factor(country_id: int, calendar_month: int) -> float:
+    return _SEASONAL_FACTOR if calendar_month in _SEASONAL_MONTHS.get(country_id, set()) else 1.0
+
+
+def calc_nnr_by_cohort(
+    df_rev: pd.DataFrame,
+) -> "tuple[pd.Series, pd.Series]":
+    """
+    NNR por cohort_month con ajuste de estacionalidad hardcoded.
+
+    Para cada seller: avg(display_value_M2/factor_M2, display_value_M3/factor_M3)
+    usando solo los meses disponibles (M2, M3 o ambos).
+    NNR_cohort = Σ per-seller averages.
+
+    Returns:
+        nnr    : Series[float] indexed by cohort_month — NNR total del cohorte
+        status : Series[str]  indexed by cohort_month — 'completo' | 'parcial' | 'pendiente'
+    """
+    _ef = pd.Series(dtype=float)
+    _es = pd.Series(dtype=str)
+
+    if df_rev.empty or "display_value" not in df_rev.columns:
+        return _ef, _es
+
+    df_rev = df_rev.copy()
+    df_rev["cohort_month"]  = pd.to_datetime(df_rev["cohort_month"])
+    df_rev["revenue_month"] = pd.to_datetime(df_rev["revenue_month"])
+
+    all_cohorts = sorted(df_rev["cohort_month"].unique())
+
+    m23 = df_rev[df_rev["lifecycle_month"].isin([2, 3])].copy()
+
+    lm_avail = (
+        m23.groupby("cohort_month")["lifecycle_month"].apply(set)
+        if not m23.empty
+        else pd.Series(dtype=object)
+    )
+
+    def _status(c):
+        s = lm_avail.get(c, set())
+        if 3 in s:   return "completo"
+        if 2 in s:   return "parcial"
+        return "pendiente"
+
+    status = pd.Series({c: _status(c) for c in all_cohorts})
+    status.index = pd.to_datetime(status.index)
+
+    if m23.empty:
+        return _ef, status
+
+    m23["_factor"] = m23.apply(
+        lambda r: _season_factor(int(r["country_id"]), int(r["revenue_month"].month)),
+        axis=1,
+    )
+    m23["_adj"] = m23["display_value"] / m23["_factor"]
+
+    per_seller = m23.groupby(["cohort_month", "seller_id"])["_adj"].mean()
+    nnr = per_seller.groupby("cohort_month").sum()
+    nnr.index = pd.to_datetime(nnr.index)
+    return nnr, status
+
+
+def calc_nno_by_cohort(
+    df_orders: pd.DataFrame,
+) -> "tuple[pd.Series, pd.Series]":
+    """
+    NNO por cohort_month con ajuste de estacionalidad hardcoded.
+
+    Returns:
+        nno    : Series[float] indexed by cohort_month
+        status : Series[str]  indexed by cohort_month — 'completo' | 'parcial' | 'pendiente'
+    """
+    _ef = pd.Series(dtype=float)
+    _es = pd.Series(dtype=str)
+
+    if df_orders.empty:
+        return _ef, _es
+
+    df_orders = df_orders.copy()
+    df_orders["cohort_month"] = pd.to_datetime(df_orders["cohort_month"])
+    df_orders["order_month"]  = pd.to_datetime(df_orders["order_month"])
+
+    all_cohorts = sorted(df_orders["cohort_month"].unique())
+
+    m23 = df_orders[df_orders["lifecycle_month"].isin([2, 3])].copy()
+
+    lm_avail = (
+        m23.groupby("cohort_month")["lifecycle_month"].apply(set)
+        if not m23.empty
+        else pd.Series(dtype=object)
+    )
+
+    def _status(c):
+        s = lm_avail.get(c, set())
+        if 3 in s:   return "completo"
+        if 2 in s:   return "parcial"
+        return "pendiente"
+
+    status = pd.Series({c: _status(c) for c in all_cohorts})
+    status.index = pd.to_datetime(status.index)
+
+    if m23.empty:
+        return _ef, status
+
+    m23["_factor"] = m23.apply(
+        lambda r: _season_factor(int(r["country_id"]), int(r["order_month"].month)),
+        axis=1,
+    )
+    m23["_adj"] = m23["order_count"] / m23["_factor"]
+
+    per_seller = m23.groupby(["cohort_month", "seller_id"])["_adj"].mean()
+    nno = per_seller.groupby("cohort_month").sum()
+    nno.index = pd.to_datetime(nno.index)
+    return nno, status
+
+
 def quartile_styles(pivot_df: pd.DataFrame, data_cols: list[str]) -> list[dict]:
     """
     Genera style_data_conditional con 4 bandas de cuartiles (escala lilac→primary).

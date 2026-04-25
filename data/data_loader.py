@@ -1,5 +1,12 @@
 """
-Carga de datos desde Redshift con caché por combinación de filtros.
+Carga de datos desde Redshift con caché en memoria.
+
+Patrón unificado para orders, revenue y forecast:
+  1. _load_*_raw()  → ejecuta la query V2 (sin filtros) y cachea el DataFrame completo
+  2. load_*()       → obtiene el raw cacheado y aplica filtros en Python
+
+Esto garantiza que un cambio de filtro en la UI nunca dispara una nueva
+query a Redshift — solo reorganiza datos ya en memoria.
 
 Expone cuatro funciones públicas:
   load_orders(filters)      → DataFrame seller × order_month × lifecycle_month × order_count
@@ -11,43 +18,51 @@ Filtros válidos (dict):
   segments           : list[str]  – default ['Starter','Plus','Top','Enterprise']
   include_churn      : bool       – default True
   country_id         : int|None   – None=ambos, 1=COL, 2=MEX
-  order_type         : str|None   – None=ambos, 'D2C', 'B2B'
-  include_credit_notes: bool      – default False (solo revenue)
+  order_type         : str|None   – None=ambos, 'D2C', 'B2B'  (solo revenue)
+  include_credit_notes: bool      – default False              (solo revenue)
 """
-import os
-import re
 import logging
+import os
 import threading
 from pathlib import Path
 
 import pandas as pd
 from cachetools import TTLCache
 
-from data.connection import get_connection
+from data.connection import get_connection, release_connection
 
 logger = logging.getLogger(__name__)
 
 _QUERIES_DIR = Path(__file__).parent.parent / "queries"
 _TTL = int(os.environ.get("CACHE_TTL_SECONDS", 1800))  # 30 min default
 
-_orders_cache: TTLCache = TTLCache(maxsize=50, ttl=_TTL)
-_revenue_cache: TTLCache = TTLCache(maxsize=50, ttl=_TTL)
-_revenue_raw_cache: TTLCache = TTLCache(maxsize=4, ttl=_TTL)   # raw sin filtros (V2)
+# Cachés raw — una entrada por tipo de dato (sin filtros)
+_orders_raw_cache:   TTLCache = TTLCache(maxsize=4, ttl=_TTL)
+_revenue_raw_cache:  TTLCache = TTLCache(maxsize=4, ttl=_TTL)
+_forecast_raw_cache: TTLCache = TTLCache(maxsize=4, ttl=_TTL)
+_budget_cache:       TTLCache = TTLCache(maxsize=4, ttl=_TTL)
+
+# Cachés de resultados filtrados — evita re-filtrar si el usuario vuelve al mismo combo
+_orders_cache:   TTLCache = TTLCache(maxsize=50, ttl=_TTL)
+_revenue_cache:  TTLCache = TTLCache(maxsize=50, ttl=_TTL)
 _forecast_cache: TTLCache = TTLCache(maxsize=50, ttl=_TTL)
-_status_cache: TTLCache = TTLCache(maxsize=4, ttl=3600)   # 1 h — para landing
+
+_status_cache:   TTLCache = TTLCache(maxsize=4, ttl=3600)  # 1 h — para landing
+
 _lock = threading.Lock()
 
-# ── Defaults ────────────────────────────────────────────────────────────────
+# ── Aliases y defaults ────────────────────────────────────────────────────────
 
 _DEFAULT_SEGMENTS = ["Starter", "Plus", "Top", "Enterprise"]
+_SEGMENT_ALIASES  = {"Starter": ["Starter", "Tiny"]}
 
 
 def _default_filters() -> dict:
     return {
-        "segments": _DEFAULT_SEGMENTS,
-        "include_churn": True,
-        "country_id": None,
-        "order_type": None,
+        "segments":             _DEFAULT_SEGMENTS,
+        "include_churn":        True,
+        "country_id":           None,
+        "order_type":           None,
         "include_credit_notes": False,
     }
 
@@ -59,10 +74,7 @@ def _merge_filters(filters: dict | None) -> dict:
     return merged
 
 
-# ── Cache key ────────────────────────────────────────────────────────────────
-
 def _cache_key(filters: dict) -> tuple:
-    """Convierte el dict de filtros a una tupla hashable."""
     return tuple(
         sorted(
             (k, tuple(v) if isinstance(v, list) else v)
@@ -71,83 +83,24 @@ def _cache_key(filters: dict) -> tuple:
     )
 
 
-# ── SQL injection ────────────────────────────────────────────────────────────
-
-def _build_params_cte(filters: dict) -> str:
-    """
-    Construye el CTE 'params' sin segment_filter (ARRAY causa list_nth_cell en Redshift).
-    Los segmentos se inyectan directamente como IN (...) via _inject_filters.
-    """
-    churn_val = "TRUE" if filters["include_churn"] else "FALSE"
-    country_id = filters["country_id"]
-    country_val = f"{country_id}::INTEGER" if country_id is not None else "NULL::INTEGER"
-    order_type = filters["order_type"]
-    ot_val = f"'{order_type}'::VARCHAR" if order_type else "NULL::VARCHAR"
-    cn_val = "TRUE" if filters["include_credit_notes"] else "FALSE"
-
-    return (
-        "params AS (\n"
-        "    SELECT\n"
-        f"        {churn_val}    AS include_churn,\n"
-        f"        {country_val}  AS country_filter,\n"
-        f"        {ot_val}       AS order_type_filter,\n"
-        f"        {cn_val}       AS include_credit_notes\n"
-        "),"
-    )
-
-
-def _inject_filters(sql: str, filters: dict) -> str:
-    """Reemplaza el CTE 'params' y convierte = ANY(p.segment_filter) → IN (...)."""
-    new_params = _build_params_cte(filters)
-
-    # 1. Reemplazar bloque params AS (...)
-    lines = sql.splitlines()
-    start = end = None
-    for i, line in enumerate(lines):
-        if re.match(r"\s*params\s+AS\s*\(", line, re.IGNORECASE):
-            start = i
-        if start is not None and i > start and re.match(r"\s*\)\s*,", line):
-            end = i
-            break
-
-    if start is not None and end is not None:
-        sql = "\n".join(lines[:start] + new_params.splitlines() + lines[end + 1:])
-    else:
-        logger.warning("No se encontró el bloque params CTE en el SQL; se ejecuta sin modificar.")
-
-    # 2. Reemplazar = ANY(p.segment_filter) → IN ('Starter', 'Tiny', 'Plus', ...)
-    # Tiny es un alias de Starter en BD — se incluye siempre que Starter esté activo.
-    _SEGMENT_ALIASES = {"Starter": ["Starter", "Tiny"]}
-    segments = filters["segments"]
-    expanded: list[str] = []
-    for s in segments:
-        expanded.extend(_SEGMENT_ALIASES.get(s, [s]))
-    in_list = ", ".join(f"'{s}'" for s in dict.fromkeys(expanded))  # preserva orden, sin duplicados
-    sql = re.sub(
-        r"=\s*ANY\s*\(\s*p\.segment_filter\s*\)",
-        f"IN ({in_list})",
-        sql,
-        flags=re.IGNORECASE,
-    )
-
-    return sql
-
-
-# ── Ejecución ────────────────────────────────────────────────────────────────
+# ── Ejecución SQL ─────────────────────────────────────────────────────────────
 
 def _run_query(sql: str, _retries: int = 2) -> pd.DataFrame:
-    """Ejecuta una query en Redshift con retry automático en errores de conexión."""
     last_exc: Exception | None = None
     for attempt in range(1, _retries + 2):
+        conn = None
         try:
             conn = get_connection()
             with conn.cursor() as cur:
                 cur.execute(sql)
                 cols = [desc[0] for desc in cur.description]
                 rows = cur.fetchall()
-            conn.close()
+            release_connection(conn)          # ← devuelve al pool en vez de cerrar
             return pd.DataFrame(rows, columns=cols)
         except Exception as exc:
+            if conn:
+                try: conn.close()
+                except: pass
             last_exc = exc
             is_conn_err = any(
                 kw in str(exc).lower()
@@ -160,22 +113,67 @@ def _run_query(sql: str, _retries: int = 2) -> pd.DataFrame:
     logger.error("Error ejecutando query en Redshift: %s", last_exc)
     return pd.DataFrame()
 
-
 def _read_sql(filename: str) -> str:
-    path = _QUERIES_DIR / filename
-    return path.read_text(encoding="utf-8")
+    return (_QUERIES_DIR / filename).read_text(encoding="utf-8")
 
 
-# ── API pública ──────────────────────────────────────────────────────────────
+# ── Filtros Python (comunes a orders y forecast) ──────────────────────────────
+
+def _apply_common_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
+    """Aplica segmento, país y churn sobre un DataFrame ya cargado."""
+    if df.empty:
+        return df
+
+    # Segmentos (con alias Tiny = Starter)
+    segments = filters["segments"]
+    expanded: list[str] = []
+    for s in segments:
+        expanded.extend(_SEGMENT_ALIASES.get(s, [s]))
+    df = df[df["segment"].isin(expanded)]
+
+    # País
+    if filters["country_id"] is not None:
+        df = df[df["country_id"] == filters["country_id"]]
+
+    # Churn
+    if not filters["include_churn"] and "churn_flag" in df.columns:
+        df = df[df["churn_flag"] == 0]
+
+    return df
+
+
+# ── ORDERS ────────────────────────────────────────────────────────────────────
+
+def _load_orders_raw() -> pd.DataFrame:
+    """Carga TODOS los datos de órdenes (V2 sin filtros). Resultado cacheado."""
+    key = "orders_raw"
+    with _lock:
+        if key in _orders_raw_cache:
+            return _orders_raw_cache[key]
+
+    sql = _read_sql("01_inputs_orders_V2.sql")
+    df  = _run_query(sql)
+
+    if not df.empty:
+        df["cohort_month"]    = pd.to_datetime(df["cohort_month"])
+        df["order_month"]     = pd.to_datetime(df["order_month"])
+        df["order_count"]     = pd.to_numeric(df["order_count"], errors="coerce").fillna(0)
+        df["lifecycle_month"] = pd.to_numeric(df["lifecycle_month"], errors="coerce").astype("Int64")
+        df["churn_flag"]      = pd.to_numeric(df["churn_flag"], errors="coerce").fillna(0).astype(int)
+
+    with _lock:
+        _orders_raw_cache[key] = df
+
+    return df
+
 
 def load_orders(filters: dict | None = None) -> pd.DataFrame:
     """
-    Carga órdenes totales (D2C + B2B) por seller × mes desde staging.orbita.sell_order.
+    Órdenes totales (D2C + B2B) por seller × mes.
 
-    Columnas del DataFrame:
+    Columnas:
         seller_id, seller_name, segment, country_id, country_name,
-        cohort_month, churn_flag, order_month,
-        lifecycle_month, order_count
+        cohort_month, churn_flag, order_month, lifecycle_month, order_count
     """
     filters = _merge_filters(filters)
     key = ("orders",) + _cache_key(filters)
@@ -184,15 +182,7 @@ def load_orders(filters: dict | None = None) -> pd.DataFrame:
         if key in _orders_cache:
             return _orders_cache[key]
 
-    sql = _read_sql("01_inputs_orders.sql")
-    sql = _inject_filters(sql, filters)
-    df = _run_query(sql)
-
-    if not df.empty:
-        df["cohort_month"] = pd.to_datetime(df["cohort_month"])
-        df["order_month"] = pd.to_datetime(df["order_month"])
-        df["order_count"] = pd.to_numeric(df["order_count"], errors="coerce").fillna(0)
-        df["lifecycle_month"] = pd.to_numeric(df["lifecycle_month"], errors="coerce").astype("Int64")
+    df = _apply_common_filters(_load_orders_raw().copy(), filters)
 
     with _lock:
         _orders_cache[key] = df
@@ -200,18 +190,17 @@ def load_orders(filters: dict | None = None) -> pd.DataFrame:
     return df
 
 
+# ── REVENUE ───────────────────────────────────────────────────────────────────
+
 def _load_revenue_raw() -> pd.DataFrame:
-    """
-    Carga todo el revenue (V2 query) sin filtros. Resultado cacheado como base
-    para los filtros en memoria de load_revenue().
-    """
+    """Carga TODO el revenue (V2 sin filtros). Resultado cacheado."""
     key = "revenue_raw"
     with _lock:
         if key in _revenue_raw_cache:
             return _revenue_raw_cache[key]
 
     sql = _read_sql("02_inputs_revenue_V2.sql")
-    df = _run_query(sql)
+    df  = _run_query(sql)
 
     if not df.empty:
         df["cohort_month"]    = pd.to_datetime(df["cohort_month"])
@@ -233,9 +222,9 @@ def _load_revenue_raw() -> pd.DataFrame:
 
 def load_revenue(filters: dict | None = None) -> pd.DataFrame:
     """
-    Revenue P&L por seller × mes — filtros aplicados en memoria sobre V2 query.
+    Revenue P&L por seller × mes — filtros aplicados en memoria.
 
-    Columnas del DataFrame:
+    Columnas:
         seller_id, seller_name, segment, country_id, country_name,
         cohort_month, churn_flag, revenue_month, lifecycle_month,
         fulfillment_revenue, d2c_fulfillment_revenue, b2b_fulfillment_revenue,
@@ -249,44 +238,23 @@ def load_revenue(filters: dict | None = None) -> pd.DataFrame:
         if key in _revenue_cache:
             return _revenue_cache[key]
 
-    raw = _load_revenue_raw()
-    if raw.empty:
-        with _lock:
-            _revenue_cache[key] = raw
-        return raw
+    df = _apply_common_filters(_load_revenue_raw().copy(), filters)
 
-    df = raw.copy()
-
-    # ── Segmentos (con alias Tiny = Starter) ──────────────────────────────────
-    _SEGMENT_ALIASES = {"Starter": ["Starter", "Tiny"]}
-    segments = filters["segments"]
-    expanded: list[str] = []
-    for s in segments:
-        expanded.extend(_SEGMENT_ALIASES.get(s, [s]))
-    df = df[df["segment"].isin(expanded)]
-
-    # ── País ──────────────────────────────────────────────────────────────────
-    if filters["country_id"] is not None:
-        df = df[df["country_id"] == filters["country_id"]]
-
-    # ── Churn ─────────────────────────────────────────────────────────────────
-    if not filters["include_churn"]:
-        df = df[df["churn_flag"] == 0]
-
-    # ── Tipo de orden: recomponer total_revenue con el split D2C o B2B ────────
-    order_type = filters["order_type"]
-    if order_type in ("D2C", "B2B") and not df.empty:
-        fulf_col = "d2c_fulfillment_revenue" if order_type == "D2C" else "b2b_fulfillment_revenue"
-        other = ["returns_revenue", "warehousing_revenue", "inbound_revenue",
-                 "saas_revenue", "external_revenue", "adjecencies_revenue"]
-        df = df.copy()
-        df["total_revenue"] = df[[fulf_col] + [c for c in other if c in df.columns]].sum(axis=1)
-
-    # ── Credit notes ──────────────────────────────────────────────────────────
-    if filters["include_credit_notes"] and "credit_notes_amount" in df.columns and not df.empty:
-        if order_type not in ("D2C", "B2B"):
+    if not df.empty:
+        # Tipo de orden: recomponer total_revenue con split D2C o B2B
+        order_type = filters["order_type"]
+        if order_type in ("D2C", "B2B"):
+            fulf_col = "d2c_fulfillment_revenue" if order_type == "D2C" else "b2b_fulfillment_revenue"
+            other = ["returns_revenue", "warehousing_revenue", "inbound_revenue",
+                     "saas_revenue", "external_revenue", "adjecencies_revenue"]
             df = df.copy()
-        df["total_revenue"] = df["total_revenue"] + df["credit_notes_amount"]
+            df["total_revenue"] = df[[fulf_col] + [c for c in other if c in df.columns]].sum(axis=1)
+
+        # Credit notes
+        if filters["include_credit_notes"] and "credit_notes_amount" in df.columns:
+            if filters["order_type"] not in ("D2C", "B2B"):
+                df = df.copy()
+            df["total_revenue"] = df["total_revenue"] - df["credit_notes_amount"]
 
     with _lock:
         _revenue_cache[key] = df
@@ -294,18 +262,39 @@ def load_revenue(filters: dict | None = None) -> pd.DataFrame:
     return df
 
 
+# ── FORECAST ──────────────────────────────────────────────────────────────────
+
+def _load_forecast_raw() -> pd.DataFrame:
+    """Carga TODO el forecast (V2 sin filtros). Resultado cacheado."""
+    key = "forecast_raw"
+    with _lock:
+        if key in _forecast_raw_cache:
+            return _forecast_raw_cache[key]
+
+    sql = _read_sql("03_inputs_forecast_V2.sql")
+    df  = _run_query(sql)
+
+    if not df.empty:
+        df["cohort_month"]      = pd.to_datetime(df["cohort_month"])
+        df["forecast_month"]    = pd.to_datetime(df["forecast_month"])
+        df["forecasted_orders"] = pd.to_numeric(df["forecasted_orders"], errors="coerce").fillna(0)
+        df["lifecycle_month"]   = pd.to_numeric(df["lifecycle_month"], errors="coerce").astype("Int64")
+        if "churn_flag" in df.columns:
+            df["churn_flag"] = pd.to_numeric(df["churn_flag"], errors="coerce").fillna(0).astype(int)
+
+    with _lock:
+        _forecast_raw_cache[key] = df
+
+    return df
+
+
 def load_forecast(filters: dict | None = None) -> pd.DataFrame:
     """
-    Carga el forecast de órdenes por seller × mes desde core.forecast.official_forecast_temp.
-    La tabla ya expone el forecast oficial vigente — no se filtra por version_id.
-    Cubre hasta Dic 2026.
+    Forecast de órdenes por seller × mes (hasta Dic 2026).
 
-    Filtros aplicados: country_id, segments (vía params CTE).
-    No aplican: include_churn, order_type, include_credit_notes.
-
-    Columnas del DataFrame:
-        seller_id, cohort_month, segment, country_id,
-        lifecycle_month, forecast_month, forecasted_orders
+    Columnas:
+        seller_id, seller_name, cohort_month, segment, country_id,
+        churn_flag, lifecycle_month, forecast_month, forecasted_orders
     """
     filters = _merge_filters(filters)
     key = ("forecast",) + _cache_key(filters)
@@ -314,49 +303,7 @@ def load_forecast(filters: dict | None = None) -> pd.DataFrame:
         if key in _forecast_cache:
             return _forecast_cache[key]
 
-    sql = _read_sql("03_inputs_forecast.sql")
-
-    # El query 03 tiene un params CTE distinto (country_filter + segment_filter como VARCHAR)
-    # Se inyecta manualmente para respetar su estructura particular.
-    country_id = filters["country_id"]
-    segments = filters["segments"]
-    country_val = f"{country_id}::INTEGER" if country_id is not None else "NULL::INTEGER"
-    # segment_filter en el query 03 es un único valor VARCHAR (o NULL para todos)
-    # Si hay múltiples segmentos activos se pasa NULL y el filtro del WHERE usa la lista fija
-    seg_val = "NULL::VARCHAR"
-
-    new_params = (
-        "params AS (\n"
-        "    SELECT\n"
-        f"        {country_val}  AS country_filter,\n"
-        f"        {seg_val}      AS segment_filter\n"
-        "),"
-    )
-
-    lines = sql.splitlines()
-    start = end = None
-    for i, line in enumerate(lines):
-        if re.match(r"\s*params\s+AS\s*\(", line, re.IGNORECASE):
-            start = i
-        if start is not None and i > start and re.match(r"\s*\)\s*,", line):
-            end = i
-            break
-
-    if start is not None and end is not None:
-        sql = "\n".join(lines[:start] + new_params.splitlines() + lines[end + 1:])
-
-    # Si los segmentos no son el default completo, filtramos en Python post-query
-    df = _run_query(sql)
-
-    if not df.empty:
-        df["cohort_month"] = pd.to_datetime(df["cohort_month"])
-        df["forecast_month"] = pd.to_datetime(df["forecast_month"])
-        df["forecasted_orders"] = pd.to_numeric(df["forecasted_orders"], errors="coerce").fillna(0)
-        df["lifecycle_month"] = pd.to_numeric(df["lifecycle_month"], errors="coerce").astype("Int64")
-
-        # Filtrar segmentos en Python si el usuario no quiere todos
-        if segments != _DEFAULT_SEGMENTS:
-            df = df[df["segment"].isin(segments)]
+    df = _apply_common_filters(_load_forecast_raw().copy(), filters)
 
     with _lock:
         _forecast_cache[key] = df
@@ -364,15 +311,11 @@ def load_forecast(filters: dict | None = None) -> pd.DataFrame:
     return df
 
 
-def load_last_order_month() -> "date | None":
-    """
-    Retorna el último mes calendario con órdenes reales en Redshift.
-    Usa la misma fuente que 01_inputs_orders.sql (staging.orbita.sell_order_log
-    con sell_order_state_id = 2 y bodega operada por Melonn).
+# ── LAST ORDER MONTH (landing) ────────────────────────────────────────────────
 
-    Resultado cacheado 1 hora — ideal para la landing page.
-    """
-    from datetime import date as _date  # evitar shadowing del módulo
+def load_last_order_month() -> "date | None":
+    """Retorna el último mes calendario con órdenes reales. Cacheado 1 hora."""
+    from datetime import date as _date  # evitar shadowing
 
     key = "last_order_month"
     with _lock:
@@ -410,32 +353,66 @@ def load_last_order_month() -> "date | None":
     return result
 
 
-def load_sellers() -> pd.DataFrame:
-    """
-    Lista única de sellers con su cohort_month original (según los datos de Redshift).
-    Usa load_orders con filtros por defecto (todos los segmentos y países).
+# ── BUDGET NNR/NNO ────────────────────────────────────────────────────────────
 
-    Columnas: seller_id, seller_name, cohort_month, country_id, country_name
+def load_budget_nnr() -> pd.DataFrame:
     """
-    df = load_orders()
+    Budget NNR/NNO 2026 desde staging.finance.financial_planning_budget_nnr.
+
+    Columnas: date, country_id,
+              budget_nnr_base, budget_nno_base,   ← escenario Base / "Junta"
+              budget_nnr_bear, budget_nno_bear     ← escenario Bear
+    budget_nnr_* en USD brutos; budget_nno_* en órdenes.
+    """
+    key = "budget_nnr"
+    with _lock:
+        if key in _budget_cache:
+            return _budget_cache[key]
+
+    sql = _read_sql("04_inputs_budget_nnr.sql")
+    df  = _run_query(sql)
+
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+        for col in ["budget_nnr_base", "budget_nno_base",
+                    "budget_nnr_bear", "budget_nno_bear"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    with _lock:
+        _budget_cache[key] = df
+
+    return df
+
+
+# ── SELLERS (config page) ─────────────────────────────────────────────────────
+
+def load_sellers() -> pd.DataFrame:
+    """Lista única de sellers con su cohort_month original desde Redshift."""
+    df = _load_orders_raw()
     if df.empty:
         return pd.DataFrame(columns=["seller_id", "seller_name", "cohort_month", "country_id", "country_name"])
 
     cols = [c for c in ["seller_id", "seller_name", "cohort_month", "country_id", "country_name"] if c in df.columns]
     return (
         df[cols]
-        .sort_values("cohort_month")                        # keep earliest cohort on dedup
+        .sort_values("cohort_month")
         .drop_duplicates(subset=["seller_id"], keep="first")
         .sort_values("seller_name")
         .reset_index(drop=True)
     )
 
 
+# ── Utilidades ────────────────────────────────────────────────────────────────
+
 def clear_cache() -> None:
     """Limpia todas las cachés manualmente (útil para testing)."""
     with _lock:
+        _orders_raw_cache.clear()
+        _revenue_raw_cache.clear()
+        _forecast_raw_cache.clear()
+        _budget_cache.clear()
         _orders_cache.clear()
         _revenue_cache.clear()
-        _revenue_raw_cache.clear()
         _forecast_cache.clear()
         _status_cache.clear()

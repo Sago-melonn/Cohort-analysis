@@ -9,9 +9,17 @@ Metodología:
   - NRR(M) = smooth_revenue(M) / smooth_revenue(M-12)
   - Forecast (solo NOR): extiende la serie con forecasted_orders
 
+Gráfico 1 — % Ratio:
+  - Muestra NOR o NRR mensual como porcentaje YoY.
+  - Hover incluye numerador, denominador y corte de cohortes del mes.
+
+Gráfico 2 — Evolución absoluta (universo fijo):
+  - Universo "base"  → siempre cohortes ≤ corte_base  (mismo grupo todo el tiempo)
+  - Universo "todos" → reutiliza smooth_num de la serie de retención  (M-13 dinámico)
+  - Muestra la tendencia real de la base como insumo del plan de negocio.
+
 Cards:
   - Todas las métricas usan los últimos 3 meses CERRADOS.
-  - Mes cerrado más reciente = mes anterior al mes en curso.
 """
 import pandas as pd
 import plotly.graph_objects as go
@@ -37,35 +45,15 @@ def nor_layout() -> html.Div:
     return html.Div(
         [
             html.Div(
-                [
-                    html.H2("Net Revenue Retention / Net Order Retention", className="page-title"),
-                ],
+                [html.H2("Net Revenue Retention / Net Order Retention", className="page-title")],
                 className="page-header",
             ),
             nor_filters(),
-            html.Div(id="nor-kpis",            className="kpi-strip"),
-            html.Div([
-                # Toggle % Ratio / Absoluto — esquina superior derecha del card
-                html.Div(
-                    dcc.RadioItems(
-                        id="nor-vista",
-                        options=[
-                            {"label": "% Ratio",  "value": "ratio"},
-                            {"label": "Absoluto", "value": "absoluto"},
-                        ],
-                        value="ratio",
-                        inline=True,
-                        className="fb-radio",
-                        labelClassName="fb-radio-label",
-                        inputClassName="fb-radio-input",
-                    ),
-                    className="chart-vista-toggle",
-                ),
-                html.Div(id="nor-chart-container"),
-            ], className="page-section card chart-card-wrapper"),
-            html.Div(id="nor-table",         className="page-section"),
-            html.Div(id="nor-churn-section", className="page-section"),
-            # Div oculto usado como output dummy del clientside_callback de pills
+            html.Div(id="nor-kpis",          className="kpi-strip"),
+            html.Div(id="nor-chart-container", className="page-section card"),
+            html.Div(id="nor-table",           className="page-section"),
+            html.Div(id="nor-abs-chart",       className="page-section card"),
+            html.Div(id="nor-churn-section",   className="page-section"),
             html.Div(id="nor-pills-dummy", style={"display": "none"}),
         ],
         className="page",
@@ -73,8 +61,6 @@ def nor_layout() -> html.Div:
 
 
 # ── Clientside callback: sincroniza .fb-pill--on con el value de Dash ─────────
-# Lee `value` directamente desde React (no desde input.checked del DOM),
-# lo que garantiza consistencia independientemente del timing de renderizado.
 clientside_callback(
     """
     function(value) {
@@ -129,10 +115,9 @@ def _ratio_variant(val) -> str:
     return "muted"
 
 
-# ── Lógica de cards (3M sobre meses cerrados) ─────────────────────────────────
+# ── Lógica de cards ───────────────────────────────────────────────────────────
 
 def _last_closed_month() -> pd.Timestamp:
-    """Primer día del mes anterior al mes en curso."""
     today = pd.Timestamp.today()
     return (today.replace(day=1) - pd.DateOffset(months=1)).normalize()
 
@@ -147,14 +132,78 @@ def _last_val(df: pd.DataFrame) -> float | None:
 
 
 def _tendencia_3m(df: pd.DataFrame) -> float | None:
-    """
-    (avg últimos 3 meses cerrados) − (avg 3 meses anteriores), en pp.
-    Requiere al menos 6 filas.
-    """
     vals = df["ratio"].tolist()
     if len(vals) >= 6:
         return (sum(vals[-3:]) / 3 - sum(vals[-6:-3]) / 3) * 100
     return None
+
+
+# ── Evolución absoluta universo fijo ──────────────────────────────────────────
+
+def _abs_fixed_universe(
+    df_source: pd.DataFrame,
+    value_col: str,
+    month_col: str,
+    fixed_cutoff: pd.Timestamp,
+    df_fc: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """
+    Serie absoluta con universo fijo (cohorts ≤ fixed_cutoff).
+
+    Suavizado rolling 3 por cohorte (mismo que calc_retention_series),
+    luego suma por mes. Para forecast: suma directa de forecasted_orders
+    para cohorts ≤ fixed_cutoff en meses futuros.
+
+    Retorna DataFrame: month_col | smooth_total | is_forecast
+    """
+    _empty = pd.DataFrame(columns=[month_col, "smooth_total", "is_forecast"])
+    if df_source.empty:
+        return _empty
+
+    df_f = df_source[df_source["cohort_month"] <= fixed_cutoff].copy()
+    if df_f.empty:
+        return _empty
+
+    agg = (
+        df_f.groupby(["cohort_month", month_col])[value_col]
+        .sum()
+        .reset_index()
+        .sort_values(["cohort_month", month_col])
+    )
+    agg["smooth"] = (
+        agg.groupby("cohort_month")[value_col]
+        .transform(lambda s: s.rolling(3, min_periods=1).mean())
+    )
+    last_actual = agg[month_col].max()
+
+    actuals = (
+        agg.groupby(month_col)["smooth"]
+        .sum()
+        .reset_index()
+        .rename(columns={"smooth": "smooth_total"})
+    )
+    actuals["is_forecast"] = False
+
+    result = actuals.copy()
+
+    if df_fc is not None and not df_fc.empty:
+        fc_f = df_fc[df_fc["cohort_month"] <= fixed_cutoff].copy()
+        if not fc_f.empty:
+            fc_future = fc_f[fc_f["forecast_month"] > last_actual]
+            if not fc_future.empty:
+                fc_m = (
+                    fc_future.groupby("forecast_month")["forecasted_orders"]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={
+                        "forecast_month": month_col,
+                        "forecasted_orders": "smooth_total",
+                    })
+                )
+                fc_m["is_forecast"] = True
+                result = pd.concat([result, fc_m], ignore_index=True)
+
+    return result.sort_values(month_col).reset_index(drop=True)
 
 
 # ── Sección Churn ─────────────────────────────────────────────────────────────
@@ -176,7 +225,6 @@ def _build_churn_section(
     Filtros ya aplicados antes de llamar: país, segmentos.
     Siempre usa churn_flag == 1 (ignora el filtro de churn del sidebar).
     """
-    # Elegir fuente según métrica
     if metric == "nor":
         src      = df_orders_all
         val_col  = "order_count"
@@ -191,7 +239,6 @@ def _build_churn_section(
     if src.empty:
         return html.Div()
 
-    # Universo de cohortes (misma lógica que NOR/NRR)
     corte_ts = pd.Timestamp(corte_base)
     if universo == "base":
         universe_mask = src["cohort_month"] <= corte_ts
@@ -200,8 +247,8 @@ def _build_churn_section(
         universe_mask = src["cohort_month"] <= cutoff_todos
 
     df_u = src[universe_mask]
-
     churned_ids = df_u[df_u["churn_flag"] == 1]["seller_id"].unique()
+
     if len(churned_ids) == 0:
         return html.Div(
             [html.P("Sin sellers en churn para el universo seleccionado.", className="placeholder-hint")],
@@ -221,14 +268,12 @@ def _build_churn_section(
             className="page-section card",
         )
 
-    # ── Agregar por mes × seller ──────────────────────────────────────────────
     monthly = (
         df_churn
         .groupby([date_col, "seller_id", "seller_name"], as_index=False)[val_col]
         .sum()
     )
     monthly[date_col] = pd.to_datetime(monthly[date_col])
-    # alias común para simplificar el resto del código
     monthly = monthly.rename(columns={date_col: "period", val_col: "value"})
 
     month_totals = (
@@ -237,7 +282,6 @@ def _build_churn_section(
         .sort_values("period")
     )
 
-    # ── Gráfico de barras mes a mes ───────────────────────────────────────────
     is_rev    = (metric == "nrr")
     fmt_val   = (lambda v: f"{v:,.1f}") if is_rev else (lambda v: f"{int(v):,}")
     hover_lbl = val_lbl
@@ -251,31 +295,25 @@ def _build_churn_section(
         textposition="outside",
         textfont=dict(size=10, color="#4827BE", family="Arial Black, sans-serif"),
         cliponaxis=False,
-        hovertemplate=f"<b>%{{x|%b %Y}}</b><br>{hover_lbl}: %{{y:,.1f}}<extra></extra>"
-        if is_rev else
-        f"<b>%{{x|%b %Y}}</b><br>{hover_lbl}: %{{y:,}}<extra></extra>",
+        hovertemplate=(
+            f"<b>%{{x|%b %Y}}</b><br>{hover_lbl}: %{{y:,.1f}}<extra></extra>"
+            if is_rev else
+            f"<b>%{{x|%b %Y}}</b><br>{hover_lbl}: %{{y:,}}<extra></extra>"
+        ),
     ))
     x_pad = pd.DateOffset(weeks=3)
     fig.update_layout(
-        title=dict(
-            text=f"{val_lbl} — Sellers en Churn",
-            font=dict(size=14, color="#1A1659"),
-        ),
+        title=dict(text=f"{val_lbl} — Sellers en Churn", font=dict(size=14, color="#1A1659")),
         xaxis=dict(
-            tickformat="%b %Y", dtick="M1", tickangle=-45,
-            gridcolor="#f5f5f5",
+            tickformat="%b %Y", dtick="M1", tickangle=-45, gridcolor="#f5f5f5",
             range=[jan_2025 - x_pad, last_closed + x_pad],
         ),
         yaxis=dict(gridcolor="#f5f5f5", title=val_lbl),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        margin=dict(l=60, r=30, t=60, b=80),
-        height=360,
-        showlegend=False,
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(l=60, r=30, t=60, b=80), height=360, showlegend=False,
     )
     chart = dcc.Graph(figure=fig, config={"displayModeBar": False})
 
-    # ── Tabla: top 5 + Otros ──────────────────────────────────────────────────
     month_totals_desc = month_totals.sort_values("period", ascending=False).copy()
     month_totals_desc["_year"] = month_totals_desc["period"].dt.year
 
@@ -299,13 +337,12 @@ def _build_churn_section(
 
             month_summary = html.Summary(
                 html.Div([
-                    html.Div(m_lbl,    className="nt-cell nt-label nt-month-lbl"),
+                    html.Div(m_lbl,     className="nt-cell nt-label nt-month-lbl"),
                     html.Div(m_total_s, className="nt-cell nt-num nt-ratio-val"),
                     html.Div(str(n_sellers), className="nt-cell nt-num"),
                 ], className="nt-row nt-month-row"),
                 className="nt-summary",
             )
-
             detail_rows = [
                 html.Div([
                     html.Div(row["seller_name"],    className="nt-cell nt-label nt-seller-name"),
@@ -314,10 +351,8 @@ def _build_churn_section(
                 ], className="nt-row nt-detail-row")
                 for _, row in top10.iterrows()
             ]
-
-            # Fila "Otros (N)" si hay más de 10 sellers
-            n_otros      = n_sellers - len(top10)
-            otros_val    = m_total - top10["value"].sum()
+            n_otros   = n_sellers - len(top10)
+            otros_val = m_total - top10["value"].sum()
             if n_otros > 0:
                 detail_rows.append(html.Div([
                     html.Div(f"Otros ({n_otros})", className="nt-cell nt-label nt-seller-name nt-otros"),
@@ -349,7 +384,6 @@ def _build_churn_section(
         html.Div([tbl_header, *year_blocks], className="nt-table"),
         className="ct-wrap",
     )
-
     return html.Div([
         html.H3(f"Churn — {val_lbl} mensuales", className="section-title"),
         chart,
@@ -363,6 +397,7 @@ def _build_churn_section(
 @callback(
     Output("nor-kpis",            "children"),
     Output("nor-chart-container", "children"),
+    Output("nor-abs-chart",       "children"),
     Output("nor-table",           "children"),
     Output("nor-churn-section",   "children"),
     Input("nor-metric",    "value"),
@@ -375,13 +410,12 @@ def _build_churn_section(
     Input("nor-universo",  "value"),
     Input("nor-corte-base","date"),
     Input("nor-forecast",  "value"),
-    Input("nor-vista",     "value"),
     Input("url",           "pathname"),
     State("cohort-overrides", "data"),
     prevent_initial_call=False,
 )
 def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
-               segmentos, churn, universo, corte_base, use_forecast, vista, pathname,
+               segmentos, churn, universo, corte_base, use_forecast, pathname,
                cohort_overrides):
     if pathname != "/nor":
         raise PreventUpdate
@@ -389,14 +423,15 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
     metric       = metric       or "nor"
     universo     = universo     or "base"
     use_forecast = use_forecast or "no"
-    vista        = vista        or "ratio"
-    # Normalizar a día 1 del mes (DatePickerSingle puede devolver cualquier día)
+
     corte_base = (
         pd.Timestamp(corte_base).replace(day=1).strftime("%Y-%m-%d")
-        if corte_base else pd.Timestamp.today().replace(month=12, day=1).replace(year=max(pd.Timestamp.today().year - 2, 2024)).strftime("%Y-%m-%d")
+        if corte_base
+        else pd.Timestamp.today().replace(month=12, day=1)
+            .replace(year=max(pd.Timestamp.today().year - 2, 2024))
+            .strftime("%Y-%m-%d")
     )
 
-    # Forecast solo aplica para NOR
     if metric == "nrr":
         use_forecast = "no"
 
@@ -411,9 +446,6 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
     if use_forecast == "si":
         df_fc = apply_cohort_overrides(load_forecast(filters), cohort_overrides, "forecast_month")
 
-    # Cortar actuals en last_closed: evita que un mes parcial (ej. Abril en curso)
-    # sea tomado como last_actual en calc_retention_series y deje Abril en el limbo
-    # (excluido de actuals por > last_closed y de forecast por is_forecast=False).
     df_orders_cut = (
         df_orders[df_orders["order_month"] <= last_closed]
         if not df_orders.empty else df_orders
@@ -432,7 +464,6 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
         universo, corte_base, None,
     )
 
-    # ── Series reales (sin forecast) ──────────────────────────────────────────
     nor_actual = (
         nor_df[~nor_df["is_forecast"]].dropna(subset=["ratio"])
         if not nor_df.empty else pd.DataFrame()
@@ -441,8 +472,6 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
         nrr_df[~nrr_df["is_forecast"]].dropna(subset=["ratio"])
         if not nrr_df.empty else pd.DataFrame()
     )
-
-    # ── Corte en último mes cerrado ───────────────────────────────────────────
     nor_closed = (
         nor_actual[nor_actual["month"] <= last_closed]
         if not nor_actual.empty else nor_actual
@@ -452,7 +481,7 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
         if not nrr_actual.empty else nrr_actual
     )
 
-    # ── Valores para cards ────────────────────────────────────────────────────
+    # ── KPIs ──────────────────────────────────────────────────────────────────
     nor_3m    = _avg_3m(nor_closed)
     nrr_3m    = _avg_3m(nrr_closed)
     nor_last  = _last_val(nor_closed)
@@ -461,37 +490,33 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
     nrr_trend = _tendencia_3m(nrr_closed)
 
     last_closed_lbl = last_closed.strftime("%b %Y")
+    unit            = revenue_display_unit(pais, moneda)
+    pais_label      = _PAIS_LABEL.get(pais or "CONSOLIDADO", pais or "Consolidado")
 
     def _trend_card(label, trend_val):
         if trend_val is None:
             return _kpi_card(label, "—", "vs trimestre anterior", "muted")
         txt = f"{trend_val:+.0f} pp vs trim. anterior"
-        var = "verde" if trend_val >= 0 else "primary"
-        return _kpi_card(label, txt, "vs trimestre anterior", var)
+        return _kpi_card(label, txt, "vs trimestre anterior", "verde" if trend_val >= 0 else "primary")
 
-    # ── KPIs según métrica seleccionada ───────────────────────────────────────
     if metric == "nor":
         kpis = [
-            _kpi_card("NOR 3M",        _fmt_pct(nor_3m),   "Últimos 3 meses cerrados",    _ratio_variant(nor_3m)),
-            _kpi_card("NOR último mes", _fmt_pct(nor_last),  last_closed_lbl,              _ratio_variant(nor_last)),
+            _kpi_card("NOR 3M",         _fmt_pct(nor_3m),  "Últimos 3 meses cerrados",   _ratio_variant(nor_3m)),
+            _kpi_card("NOR último mes",  _fmt_pct(nor_last), last_closed_lbl,             _ratio_variant(nor_last)),
             _trend_card("Tendencia NOR", nor_trend),
-            _kpi_card("NRR 3M (ref.)", _fmt_pct(nrr_3m),   "Revenue — 3 meses cerrados",  _ratio_variant(nrr_3m)),
+            _kpi_card("NRR 3M (ref.)",   _fmt_pct(nrr_3m),  "Revenue — 3 meses cerrados", _ratio_variant(nrr_3m)),
         ]
-    else:  # nrr
+    else:
         kpis = [
-            _kpi_card("NRR 3M",        _fmt_pct(nrr_3m),   "Últimos 3 meses cerrados",    _ratio_variant(nrr_3m)),
-            _kpi_card("NRR último mes", _fmt_pct(nrr_last),  last_closed_lbl,              _ratio_variant(nrr_last)),
+            _kpi_card("NRR 3M",         _fmt_pct(nrr_3m),  "Últimos 3 meses cerrados",   _ratio_variant(nrr_3m)),
+            _kpi_card("NRR último mes",  _fmt_pct(nrr_last), last_closed_lbl,             _ratio_variant(nrr_last)),
             _trend_card("Tendencia NRR", nrr_trend),
-            _kpi_card("NOR 3M (ref.)", _fmt_pct(nor_3m),   "Órdenes — 3 meses cerrados",  _ratio_variant(nor_3m)),
+            _kpi_card("NOR 3M (ref.)",   _fmt_pct(nor_3m),  "Órdenes — 3 meses cerrados", _ratio_variant(nor_3m)),
         ]
 
-    # ── Gráfico ───────────────────────────────────────────────────────────────
-    fig = go.Figure()
-    pais_label   = _PAIS_LABEL.get(pais or "CONSOLIDADO", pais or "Consolidado")
+    # ── Gráfico 1 — % Ratio ───────────────────────────────────────────────────
+    fig1 = go.Figure()
     universo_lbl = "Base" if universo == "base" else "Todos (≥ 12 meses)"
-    unit         = revenue_display_unit(pais, moneda)
-
-    # Rango eje X — padding de 3 semanas para que las etiquetas de borde no se corten
     x_start = pd.Timestamp("2025-01-01")
     x_end   = (
         pd.Timestamp("2026-12-31")
@@ -500,224 +525,260 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
     )
     x_pad = pd.DateOffset(weeks=3)
 
-    # ── Helpers de formato según vista ───────────────────────────────────────
-    is_abs = vista == "absoluto"
+    def _add_ratio_trace(fig, df_act, df_fc_series, color, fc_color, name, is_orders):
+        if df_act.empty:
+            return
+        # Agregar cohorts_cutoff como string para el hover
+        df_p = df_act.copy()
+        df_p["cutoff_str"] = pd.to_datetime(df_p["cohorts_cutoff"]).dt.strftime("%b %Y")
 
-    def _fmt_act(v):
-        """Formato etiqueta: % en ratio, entero/decimal en absoluto."""
-        if metric == "nor":
-            return f"{v:.0%}" if not is_abs else f"{v:,.0f}"
-        return f"{v:.0%}" if not is_abs else f"{v:,.1f}"
+        hover_num_lbl = "Órdenes (T)" if is_orders else f"Revenue (T) ({unit})"
+        hover_den_lbl = "Órdenes (T-12)" if is_orders else f"Revenue (T-12) ({unit})"
+        num_fmt = ":,.0f" if is_orders else ":,.1f"
 
-    def _y_col():
-        return "smooth_num" if is_abs else "ratio"
+        fig.add_trace(go.Scatter(
+            x=df_p["month"], y=df_p["ratio"],
+            name=name, mode="lines",
+            showlegend=False, hoverinfo="skip",
+            line=dict(color=color, width=2),
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_p["month"], y=df_p["ratio"],
+            name=name, mode="markers+text",
+            hoveron="points",
+            text=[f"{v:.0%}" for v in df_p["ratio"]],
+            textposition="top center",
+            textfont=dict(size=10, color=color, family="Arial Black, sans-serif"),
+            cliponaxis=False,
+            customdata=df_p[["smooth_num", "smooth_den", "ratio", "cutoff_str"]].values,
+            marker=dict(size=5, color=color),
+            hovertemplate=(
+                f"<b>%{{x|%b %Y}}</b><br>"
+                f"{hover_num_lbl}: %{{customdata[0]{num_fmt}}}<br>"
+                f"{hover_den_lbl}: %{{customdata[1]{num_fmt}}}<br>"
+                f"<b>{name}: %{{customdata[2]:.0%}}</b><br>"
+                f"Cohortes hasta: %{{customdata[3]}}"
+                f"<extra></extra>"
+            ),
+        ))
 
-    # ── Traces ───────────────────────────────────────────────────────────────
+        if df_fc_series is not None and not df_fc_series.empty:
+            df_fc_p = df_fc_series.copy()
+            df_fc_p["cutoff_str"] = pd.to_datetime(df_fc_p["cohorts_cutoff"]).dt.strftime("%b %Y")
+            # Puente invisible
+            if not df_p.empty:
+                _bridge = pd.concat([df_p.iloc[[-1]], df_fc_p.iloc[[0]]])
+                fig.add_trace(go.Scatter(
+                    x=_bridge["month"], y=_bridge["ratio"],
+                    mode="lines",
+                    line=dict(color=fc_color, width=2, dash="dot"),
+                    showlegend=False, hoverinfo="skip",
+                ))
+            fig.add_trace(go.Scatter(
+                x=df_fc_p["month"], y=df_fc_p["ratio"],
+                name=f"{name} (forecast)", mode="lines",
+                showlegend=False, hoverinfo="skip",
+                line=dict(color=fc_color, width=2, dash="dot"),
+            ))
+            fig.add_trace(go.Scatter(
+                x=df_fc_p["month"], y=df_fc_p["ratio"],
+                name=f"{name} (forecast)", mode="markers+text",
+                hoveron="points",
+                text=[f"{v:.0%}" for v in df_fc_p["ratio"]],
+                textposition="top center",
+                textfont=dict(size=10, color=fc_color, family="Arial Black, sans-serif"),
+                cliponaxis=False,
+                customdata=df_fc_p[["smooth_num", "smooth_den", "ratio", "cutoff_str"]].values,
+                marker=dict(size=5, color=fc_color),
+                hovertemplate=(
+                    f"<b>%{{x|%b %Y}}</b><br>"
+                    f"{hover_num_lbl}: %{{customdata[0]{num_fmt}}}<br>"
+                    f"{hover_den_lbl}: %{{customdata[1]{num_fmt}}}<br>"
+                    f"<b>{name} forecast: %{{customdata[2]:.0%}}</b><br>"
+                    f"Cohortes hasta: %{{customdata[3]}}"
+                    f"<extra></extra>"
+                ),
+            ))
+
     if metric == "nor":
         nor_act = (
             nor_df[~nor_df["is_forecast"] & (nor_df["month"] <= last_closed)]
             .dropna(subset=["ratio"])
             if not nor_df.empty else pd.DataFrame()
         )
-        if not nor_act.empty:
-            fig.add_trace(go.Scatter(
-                x=nor_act["month"],
-                y=nor_act[_y_col()],
-                name="NOR",
-                mode="lines",
-                showlegend=False,
-                hoverinfo="skip",
-                line=dict(color="#4827BE", width=2),
-            ))
-            fig.add_trace(go.Scatter(
-                x=nor_act["month"],
-                y=nor_act[_y_col()],
-                name="NOR",
-                mode="markers+text",
-                hoveron="points",
-                text=[_fmt_act(v) for v in nor_act[_y_col()]],
-                textposition="top center",
-                textfont=dict(size=10, color="#4827BE", family="Arial Black, sans-serif"),
-                cliponaxis=False,
-                customdata=nor_act[["smooth_num", "smooth_den", "ratio"]].values,
-                marker=dict(size=5, color="#4827BE"),
-                hovertemplate=(
-                    "<b>%{x|%b %Y}</b><br>"
-                    "Órdenes (T): %{customdata[0]:,.0f}<br>"
-                    "Órdenes (T-12): %{customdata[1]:,.0f}<br>"
-                    "<b>NOR: %{customdata[2]:.0%}</b>"
-                    "<extra></extra>"
-                ) if is_abs else (
-                    "<b>%{x|%b %Y}</b><br>"
-                    "Órdenes (T): %{customdata[0]:,.0f}<br>"
-                    "Órdenes (T-12): %{customdata[1]:,.0f}<br>"
-                    "<b>NOR: %{y:.0%}</b>"
-                    "<extra></extra>"
-                ),
-            ))
-        if use_forecast == "si":
-            nor_fc = (
-                nor_df[nor_df["is_forecast"]].dropna(subset=["ratio"])
-                if not nor_df.empty else pd.DataFrame()
-            )
-            if not nor_fc.empty:
-                # Traza puente: línea de conexión visual (Marzo→Abril) sin hover ni etiqueta
-                if not nor_act.empty:
-                    _bridge = pd.concat([nor_act.iloc[[-1]], nor_fc.iloc[[0]]])
-                    fig.add_trace(go.Scatter(
-                        x=_bridge["month"],
-                        y=_bridge[_y_col()],
-                        mode="lines",
-                        line=dict(color="#F97316", width=2, dash="dot"),
-                        showlegend=False,
-                        hoverinfo="skip",
-                    ))
-                # Traza forecast: empieza en Abril — línea sin hover + puntos con hover
-                fig.add_trace(go.Scatter(
-                    x=nor_fc["month"],
-                    y=nor_fc[_y_col()],
-                    name="NOR (forecast)",
-                    mode="lines",
-                    showlegend=False,
-                    hoverinfo="skip",
-                    line=dict(color="#F97316", width=2, dash="dot"),
-                ))
-                fig.add_trace(go.Scatter(
-                    x=nor_fc["month"],
-                    y=nor_fc[_y_col()],
-                    name="NOR (forecast)",
-                    mode="markers+text",
-                    hoveron="points",
-                    text=[_fmt_act(v) for v in nor_fc[_y_col()]],
-                    textposition="top center",
-                    textfont=dict(size=10, color="#F97316", family="Arial Black, sans-serif"),
-                    cliponaxis=False,
-                    customdata=nor_fc[["smooth_num", "smooth_den", "ratio"]].values,
-                    marker=dict(size=5, color="#F97316"),
-                    hovertemplate=(
-                        "<b>%{x|%b %Y}</b><br>"
-                        "Órdenes (T): %{customdata[0]:,.0f}<br>"
-                        "Órdenes (T-12): %{customdata[1]:,.0f}<br>"
-                        "<b>NOR: %{customdata[2]:.0%}</b>"
-                        "<extra></extra>"
-                    ) if is_abs else (
-                        "<b>%{x|%b %Y}</b><br>"
-                        "Órdenes (T): %{customdata[0]:,.0f}<br>"
-                        "Órdenes (T-12): %{customdata[1]:,.0f}<br>"
-                        "<b>NOR: %{y:.0%}</b>"
-                        "<extra></extra>"
-                    ),
-                ))
-    else:  # nrr
+        nor_fc = (
+            nor_df[nor_df["is_forecast"]].dropna(subset=["ratio"])
+            if use_forecast == "si" and not nor_df.empty else None
+        )
+        _add_ratio_trace(fig1, nor_act, nor_fc, "#4827BE", "#F97316", "NOR", is_orders=True)
+    else:
         nrr_act = (
             nrr_df[~nrr_df["is_forecast"] & (nrr_df["month"] <= last_closed)]
             .dropna(subset=["ratio"])
             if not nrr_df.empty else pd.DataFrame()
         )
-        if not nrr_act.empty:
-            fig.add_trace(go.Scatter(
-                x=nrr_act["month"],
-                y=nrr_act[_y_col()],
-                name="NRR",
-                mode="lines",
-                showlegend=False,
-                hoverinfo="skip",
-                line=dict(color="#22C55E", width=2),
-            ))
-            fig.add_trace(go.Scatter(
-                x=nrr_act["month"],
-                y=nrr_act[_y_col()],
-                name="NRR",
-                mode="markers+text",
-                hoveron="points",
-                text=[_fmt_act(v) for v in nrr_act[_y_col()]],
-                textposition="top center",
-                textfont=dict(size=10, color="#22C55E", family="Arial Black, sans-serif"),
-                cliponaxis=False,
-                customdata=nrr_act[["smooth_num", "smooth_den", "ratio"]].values,
-                marker=dict(size=5, color="#22C55E"),
-                hovertemplate=(
-                    "<b>%{x|%b %Y}</b><br>"
-                    f"Revenue (T) ({unit}): %{{customdata[0]:,.1f}}<br>"
-                    f"Revenue (T-12) ({unit}): %{{customdata[1]:,.1f}}<br>"
-                    "<b>NRR: %{customdata[2]:.0%}</b>"
-                    "<extra></extra>"
-                ) if is_abs else (
-                    "<b>%{x|%b %Y}</b><br>"
-                    f"Revenue (T) ({unit}): %{{customdata[0]:,.1f}}<br>"
-                    f"Revenue (T-12) ({unit}): %{{customdata[1]:,.1f}}<br>"
-                    "<b>NRR: %{y:.0%}</b>"
-                    "<extra></extra>"
-                ),
-            ))
+        _add_ratio_trace(fig1, nrr_act, None, "#22C55E", "#F97316", "NRR", is_orders=False)
 
-    # ── Rango eje Y ───────────────────────────────────────────────────────────
     _active_df = nor_df if metric == "nor" else nrr_df
-    _ycol      = _y_col()
     if not _active_df.empty:
         _visible = _active_df[
             (_active_df["month"] >= x_start) & (_active_df["month"] <= x_end)
-        ].dropna(subset=[_ycol])
-        _data_max = float(_visible[_ycol].max()) if not _visible.empty else (2.0 if not is_abs else 1.0)
+        ].dropna(subset=["ratio"])
+        _data_max = float(_visible["ratio"].max()) if not _visible.empty else 1.1
     else:
-        _data_max = 2.0 if not is_abs else 1.0
-    y_max = _data_max * 1.15
+        _data_max = 1.1
+    # Mínimo de 110% para que el eje tenga espacio, techo ajustado al dato real
+    y_max = max(1.1, _data_max * 1.15)
 
-    # En modo ratio: mínimo visible 200% y límite inferior 50%
-    if not is_abs:
-        y_max = max(2.0, y_max)
-        y_min = 0.5
-        fig.add_hline(
-            y=1.0,
-            line_dash="dash", line_color="#aaa", opacity=0.6,
-            annotation_text="100%", annotation_position="right",
-        )
-    else:
-        y_min = 0.0
-
-    # ── Layout ────────────────────────────────────────────────────────────────
-    if is_abs:
-        y_title = "Órdenes (suavizado)" if metric == "nor" else f"Revenue ({unit}, suavizado)"
-        y_fmt   = None
-    else:
-        y_title = "Ratio de retención"
-        y_fmt   = ".0%"
-
-    chart_title = (
-        f"{metric.upper()} — {pais_label} ({universo_lbl})"
-        if not is_abs
-        else f"{'Órdenes' if metric == 'nor' else 'Revenue'} Base — {pais_label} ({universo_lbl})"
+    fig1.add_hline(
+        y=1.0, line_dash="dash", line_color="#aaa", opacity=0.6,
+        annotation_text="100%", annotation_position="right",
     )
-
-    fig.update_layout(
+    fig1.update_layout(
         title=dict(
-            text=chart_title,
+            text=f"{metric.upper()} — {pais_label} ({universo_lbl})",
             font=dict(size=14, color="#1A1659"),
         ),
         xaxis=dict(
-            title="Mes",
-            tickformat="%b %Y",
-            dtick="M1",
-            tickangle=-45,
-            gridcolor="#f5f5f5",
-            range=[x_start - x_pad, x_end + x_pad],
+            title="Mes", tickformat="%b %Y", dtick="M1", tickangle=-45,
+            gridcolor="#f5f5f5", range=[x_start - x_pad, x_end + x_pad],
         ),
         yaxis=dict(
-            title=y_title,
-            tickformat=y_fmt,
-            gridcolor="#f5f5f5",
-            range=[y_min, y_max],
+            title="Ratio de retención", tickformat=".0%",
+            gridcolor="#f5f5f5", range=[0.5, y_max],
         ),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        hovermode="closest",
-        hoverdistance=2,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        margin=dict(l=60, r=40, t=90, b=80),
-        height=440,
+        hovermode="closest", hoverdistance=2,
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(l=60, r=40, t=90, b=80), height=440,
+    )
+    chart1 = dcc.Graph(figure=fig1, config={"displayModeBar": False})
+
+    # ── Gráfico 2 — Evolución absoluta universo fijo ──────────────────────────
+    # Para "base": universo fijo en corte_base (mismas cohortes siempre).
+    # Para "todos": reutiliza smooth_num de la serie de retención (M-13 dinámico).
+    is_orders = (metric == "nor")
+    val_lbl2  = "Órdenes" if is_orders else f"Revenue ({unit})"
+    fixed_cutoff = pd.Timestamp(corte_base)
+
+    if universo == "base":
+        df_src2 = df_orders_cut if is_orders else df_rev_p_cut
+        val_col2 = "order_count" if is_orders else "display_value"
+        month_col2 = "order_month" if is_orders else "revenue_month"
+        fc_for_abs = df_fc if is_orders else None
+        abs_series = _abs_fixed_universe(df_src2, val_col2, month_col2, fixed_cutoff, fc_for_abs)
+        corte_lbl  = fixed_cutoff.strftime("%b %Y")
+        abs_title  = f"Evolución {val_lbl2} — base fija cohortes ≤ {corte_lbl} — {pais_label}"
+    else:
+        # "todos": reutiliza smooth_num de la serie ya calculada
+        series_src = nor_df if is_orders else nrr_df
+        if not series_src.empty:
+            abs_series = (
+                series_src[["month", "smooth_num", "is_forecast"]]
+                .rename(columns={"month": month_col2 if universo == "base" else "month",
+                                  "smooth_num": "smooth_total"})
+                .copy()
+            )
+            # Fix: unify column name
+            abs_series = series_src[["month", "smooth_num", "is_forecast"]].copy()
+            abs_series = abs_series.rename(columns={"smooth_num": "smooth_total"})
+        else:
+            abs_series = pd.DataFrame(columns=["month", "smooth_total", "is_forecast"])
+        abs_title = f"Evolución {val_lbl2} — cohortes con ≥ 13 meses — {pais_label}"
+
+    fig2 = go.Figure()
+    _empty_abs = html.Div(
+        [html.P("Sin datos para el gráfico de evolución absoluta.", className="placeholder-hint")],
+        className="placeholder-box",
     )
 
-    chart = dcc.Graph(figure=fig, config={"displayModeBar": False})
+    if abs_series.empty or abs_series["smooth_total"].isna().all():
+        abs_chart = _empty_abs
+    else:
+        # Columna de mes (puede ser month_col2 o "month" según universo)
+        _mc = "month" if "month" in abs_series.columns else month_col2
+
+        abs_act = abs_series[~abs_series["is_forecast"]].copy()
+        abs_fc  = abs_series[abs_series["is_forecast"]].copy()
+
+        def _lbl_k(v: float) -> str:
+            """Formato compacto para etiquetas: órdenes → '105K', revenue → valor con unidad."""
+            if is_orders:
+                return f"{v / 1_000:.0f}K"
+            # Revenue ya en unidades compactas (MM COP / K MXN / K USD)
+            return f"{v:,.0f}" if abs(v) >= 10 else f"{v:.1f}"
+
+        # Trace actuals
+        if not abs_act.empty:
+            fig2.add_trace(go.Scatter(
+                x=abs_act[_mc], y=abs_act["smooth_total"],
+                name=val_lbl2, mode="lines+markers+text",
+                line=dict(color="#4827BE", width=2),
+                marker=dict(size=4, color="#4827BE"),
+                text=[_lbl_k(v) for v in abs_act["smooth_total"]],
+                textposition="top center",
+                textfont=dict(size=9, color="#4827BE", family="Arial Black, sans-serif"),
+                cliponaxis=False,
+                hovertemplate=(
+                    f"<b>%{{x|%b %Y}}</b><br>{val_lbl2}: %{{y:,.0f}}<extra></extra>"
+                    if is_orders else
+                    f"<b>%{{x|%b %Y}}</b><br>{val_lbl2}: %{{y:,.1f}}<extra></extra>"
+                ),
+            ))
+
+        # Trace forecast
+        if not abs_fc.empty:
+            if not abs_act.empty:
+                _bridge = pd.concat([abs_act.iloc[[-1]], abs_fc.iloc[[0]]])
+                fig2.add_trace(go.Scatter(
+                    x=_bridge[_mc], y=_bridge["smooth_total"],
+                    mode="lines", line=dict(color="#F97316", width=2, dash="dot"),
+                    showlegend=False, hoverinfo="skip",
+                ))
+            fig2.add_trace(go.Scatter(
+                x=abs_fc[_mc], y=abs_fc["smooth_total"],
+                name=f"{val_lbl2} (forecast)", mode="lines+markers+text",
+                line=dict(color="#F97316", width=2, dash="dot"),
+                marker=dict(size=4, color="#F97316"),
+                text=[_lbl_k(v) for v in abs_fc["smooth_total"]],
+                textposition="top center",
+                textfont=dict(size=9, color="#F97316", family="Arial Black, sans-serif"),
+                cliponaxis=False,
+                hovertemplate=(
+                    f"<b>%{{x|%b %Y}}</b><br>{val_lbl2} forecast: %{{y:,.0f}}<extra></extra>"
+                    if is_orders else
+                    f"<b>%{{x|%b %Y}}</b><br>{val_lbl2} forecast: %{{y:,.1f}}<extra></extra>"
+                ),
+            ))
+
+        # Línea de referencia: último mes cerrado
+        fig2.add_vline(
+            x=last_closed.timestamp() * 1000,
+            line_dash="dot", line_color="#9684E1", opacity=0.5,
+            annotation_text="Hoy", annotation_position="top right",
+            annotation_font=dict(size=10, color="#6B6B9A"),
+        )
+
+        _all_vals = abs_series["smooth_total"].dropna()
+        # 1.25 de espacio extra para que las etiquetas de texto no queden cortadas
+        y2_max = float(_all_vals.max()) * 1.25 if not _all_vals.empty else 1.0
+
+        fig2.update_layout(
+            title=dict(text=abs_title, font=dict(size=14, color="#1A1659")),
+            xaxis=dict(
+                title="Mes", tickformat="%b %Y", dtick="M1", tickangle=-45,
+                gridcolor="#f5f5f5",
+                range=[x_start - x_pad, x_end + x_pad],
+            ),
+            yaxis=dict(
+                title=val_lbl2, gridcolor="#f5f5f5",
+                range=[0, y2_max],
+            ),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            hovermode="closest",
+            plot_bgcolor="white", paper_bgcolor="white",
+            margin=dict(l=60, r=40, t=90, b=80), height=380,
+        )
+        abs_chart = dcc.Graph(figure=fig2, config={"displayModeBar": False})
 
     # ── Tabla de trazabilidad ─────────────────────────────────────────────────
     if nor_df.empty and nrr_df.empty:
@@ -737,37 +798,31 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
             merged = merged.merge(nrr_sub, on="month", how="left")
 
         merged = merged.sort_values("month", ascending=False).head(36)
-        unit   = revenue_display_unit(pais, moneda)
 
-        # Header fijo
         tbl_header = html.Div([
-            html.Div("Período",         className="nt-cell nt-label nt-hdr"),
-            html.Div("Tipo",            className="nt-cell nt-tipo  nt-hdr"),
-            html.Div("Num. (T)",        className="nt-cell nt-num   nt-hdr"),
-            html.Div("Den. (−12)",      className="nt-cell nt-num   nt-hdr"),
-            html.Div("Ratio",           className="nt-cell nt-num   nt-hdr"),
+            html.Div("Período",    className="nt-cell nt-label nt-hdr"),
+            html.Div("Tipo",       className="nt-cell nt-tipo  nt-hdr"),
+            html.Div("Num. (T)",   className="nt-cell nt-num   nt-hdr"),
+            html.Div("Den. (−12)", className="nt-cell nt-num   nt-hdr"),
+            html.Div("Ratio",      className="nt-cell nt-num   nt-hdr"),
         ], className="nt-row")
 
-        # Agrupar por año (más reciente primero)
         merged["_year"] = pd.to_datetime(merged["month"]).dt.year
         year_blocks = []
 
-        for i, (year, ydf) in enumerate(merged.groupby("_year", sort=False)):
+        for year, ydf in merged.groupby("_year", sort=False):
             month_groups = []
             for _, r in ydf.sort_values("month", ascending=True).iterrows():
                 is_fc     = bool(r.get("is_forecast", False))
                 fc_cls    = " nt-fc" if is_fc else ""
                 month_lbl = pd.Timestamp(r["month"]).strftime("%b %Y")
-                # Resumen y fila de detalle según métrica activa
                 if metric == "nor":
-                    summary_txt  = f"NOR {_fmt_pct(r.get('nor'))}"
                     detail_tipo  = "Órdenes"
                     detail_num   = _fmt_num(r.get("nor_num"), 0)
                     detail_den   = _fmt_num(r.get("nor_den"), 0)
                     detail_ratio = _fmt_pct(r.get("nor"))
                     detail_cls   = f"nt-row nt-detail-row{fc_cls}"
                 else:
-                    summary_txt  = f"NRR {_fmt_pct(r.get('nrr'))}"
                     detail_tipo  = f"Revenue ({unit})"
                     detail_num   = _fmt_num(r.get("nrr_num"), 0)
                     detail_den   = _fmt_num(r.get("nrr_den"), 0)
@@ -776,10 +831,10 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
 
                 month_groups.append(
                     html.Div([
-                        html.Div(month_lbl,   className=f"nt-cell nt-label nt-month-lbl{fc_cls}"),
-                        html.Div(detail_tipo, className="nt-cell nt-tipo nt-detail-tipo"),
-                        html.Div(detail_num,  className="nt-cell nt-num"),
-                        html.Div(detail_den,  className="nt-cell nt-num"),
+                        html.Div(month_lbl,    className=f"nt-cell nt-label nt-month-lbl{fc_cls}"),
+                        html.Div(detail_tipo,  className="nt-cell nt-tipo nt-detail-tipo"),
+                        html.Div(detail_num,   className="nt-cell nt-num"),
+                        html.Div(detail_den,   className="nt-cell nt-num"),
                         html.Div(detail_ratio, className="nt-cell nt-num nt-ratio-val"),
                     ], className=detail_cls)
                 )
@@ -794,7 +849,6 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
                 ], className="nt-row nt-year-row"),
                 className="nt-summary",
             )
-
             year_blocks.append(
                 html.Details(
                     [year_summary, *month_groups],
@@ -812,14 +866,13 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
         ], className="page-section card")
 
     # ── Sección Churn ─────────────────────────────────────────────────────────
-    churn_filters    = build_filters(pais, segmentos, "incluir", None)  # siempre include_churn=True
-    df_orders_churn  = apply_cohort_overrides(load_orders(churn_filters),  cohort_overrides, "order_month")
-    df_rev_churn     = apply_cohort_overrides(load_revenue(churn_filters), cohort_overrides, "revenue_month")
-    df_rev_churn_p   = prepare_revenue(df_rev_churn, pais, moneda, fx_cop, fx_mxn)
-    churn_section    = _build_churn_section(
-        df_orders_churn, df_rev_churn_p,
-        metric, universo, corte_base, last_closed,
-        unit,
+    churn_filters  = build_filters(pais, segmentos, "incluir", None)
+    df_orders_ch   = apply_cohort_overrides(load_orders(churn_filters),  cohort_overrides, "order_month")
+    df_rev_ch      = apply_cohort_overrides(load_revenue(churn_filters), cohort_overrides, "revenue_month")
+    df_rev_ch_p    = prepare_revenue(df_rev_ch, pais, moneda, fx_cop, fx_mxn)
+    churn_section  = _build_churn_section(
+        df_orders_ch, df_rev_ch_p,
+        metric, universo, corte_base, last_closed, unit,
     )
 
-    return kpis, chart, table, churn_section
+    return kpis, chart1, abs_chart, table, churn_section
