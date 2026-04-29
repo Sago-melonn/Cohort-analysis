@@ -1164,6 +1164,7 @@ details[open] > .year-summary::before { transform: rotate(90deg); }
   margin: 0;
 }
 
+
 /* ── NOR/NRR Trazabilidad table (nt-*) ──────────────────────── */
 .nt-table {
   display: flex;

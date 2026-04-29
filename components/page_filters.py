@@ -368,7 +368,7 @@ def nnr_filters() -> html.Div:
                     _radio("nnr-metric", [
                         {"label": "NNO — Órdenes", "value": "orders"},
                         {"label": "NNR — Revenue", "value": "revenue"},
-                    ], "orders"),
+                    ], "revenue"),
                 ], className="fb-group"),
                 _sep(),
                 html.Div([

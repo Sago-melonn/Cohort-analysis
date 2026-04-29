@@ -17,7 +17,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import io
 
-from dash import Input, Output, State, callback, clientside_callback, ctx, dcc, html
+from dash import Input, Output, State, callback, clientside_callback, dcc, html
 from dash.exceptions import PreventUpdate
 
 from components.page_filters import ndr_filters
@@ -92,7 +92,7 @@ def ndr_layout() -> html.Div:
     return html.Div(
         [
             html.Div(
-                [html.H2("Net Dollar Retention / Net Order Retention", className="page-title")],
+                [html.H2("Net Dollar Retention / Order Dollar Retention", className="page-title")],
                 className="page-header",
             ),
             ndr_filters(),
@@ -528,7 +528,7 @@ def _build_heatmap(
                     fc_mask is not None
                     and lm in fc_mask.columns
                     and cohort_ts in fc_mask.index
-                    and bool(fc_mask.loc[cohort_ts, lm])
+                    and bool(fc_mask.at[cohort_ts, lm])
                 )
                 if v is not None:
                     if _is_fc:
@@ -617,7 +617,7 @@ def _build_heatmap(
     )
 
     _fc_legend = []
-    if fc_mask is not None and bool(fc_mask.values.any()):
+    if fc_mask is not None and fc_mask.values.any():
         _fc_legend = [html.Div([
             html.Span("", style={
                 "display": "inline-block", "width": "11px", "height": "11px",
@@ -788,7 +788,7 @@ def _build_ratio_heatmap(
                     and fc_mask is not None
                     and lm in fc_mask.columns
                     and cohort_ts in fc_mask.index
-                    and bool(fc_mask.loc[cohort_ts, lm])
+                    and bool(fc_mask.at[cohort_ts, lm])
                 )
                 if v is not None:
                     if is_deselected:
@@ -854,7 +854,7 @@ def _build_ratio_heatmap(
     )
 
     _fc_legend = []
-    if fc_mask is not None and bool(fc_mask.values.any()):
+    if fc_mask is not None and fc_mask.values.any():
         _fc_legend = [html.Div([
             html.Span("", style={
                 "display": "inline-block", "width": "11px", "height": "11px",
@@ -891,10 +891,9 @@ def _build_ratio_heatmap(
     Input("ndr-forecast",  "value"),
     Input("url",           "pathname"),
     State("cohort-overrides", "data"),
-    State("ndr-year-select", "value"),
     prevent_initial_call=False,
 )
-def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_on, pathname, cohort_overrides, current_years):
+def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_on, pathname, cohort_overrides):
     if pathname != "/ndr":
         raise PreventUpdate
 
@@ -1055,18 +1054,8 @@ def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_
     threshold = _MIN_YEAR_WEIGHT_BY_UNIT.get(unit, 100.0)
     year_options = [{"label": str(y), "value": str(y)}
                     for y in sorted(year_weights_s.index)]
-    default_values = [str(y) for y, w in year_weights_s.items()
-                      if float(w) >= threshold]
-
-    # Si es carga inicial (url trigger) o no había selección previa → defaults
-    # Si el usuario ya había interactuado → preservar su selección
-    triggered = ctx.triggered_id if ctx.triggered else "url"
-    if triggered == "url" or not current_years:
-        year_values = default_values
-    else:
-        available = {opt["value"] for opt in year_options}
-        preserved = [y for y in current_years if y in available]
-        year_values = preserved if preserved else default_values
+    year_values  = [str(y) for y, w in year_weights_s.items()
+                    if float(w) >= threshold]
 
     # ── Construir tablas raw y suavizado ──────────────────────────────────────
     if not df_fc_sellers.empty:
@@ -1229,7 +1218,7 @@ def _store_to_smooth(
         if not _fm.empty:
             _fm.index = pd.to_datetime(_fm.index)
             _fm.columns = [int(c) for c in _fm.columns]
-            fc_mask = _fm
+            fc_mask = _fm.fillna(False).astype(bool)
 
     return smooth_df, raw_pivot, weights, all_lm, is_rev, fc_mask
 

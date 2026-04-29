@@ -8,6 +8,8 @@ Lógica:
             × factor_estacional en M2+.
   Línea de corte = último order_month con datos reales.
 """
+import concurrent.futures
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -16,7 +18,7 @@ from dash import Input, Output, State, callback, dcc, html
 from dash.exceptions import PreventUpdate
 
 from components.page_filters import rolling_filters
-from data.data_loader import load_budget_nnr, load_orders
+from data.data_loader import load_budget_nnr, load_forecast, load_orders
 from data.transforms import (
     apply_cohort_overrides,
     build_filters,
@@ -153,16 +155,19 @@ def _compute_data(
     nno: pd.Series,
     nno_status: pd.Series,
     df_bud_raw: pd.DataFrame,
+    df_fc: pd.DataFrame,
     pais: str,
     escenario: str,
     end_month: pd.Timestamp,
+    today_m: "pd.Timestamp | None" = None,
+    build_detail: bool = True,
 ):
     """
     Returns:
         real_by_month  : pd.Series (order_month → actual_orders)
         fc_by_month    : pd.Series (calendar_month → projected_orders)
         cutoff         : pd.Timestamp
-        cohort_rows    : list[dict]
+        cohort_rows    : list[dict]  (vacío si build_detail=False)
     """
     bud_col = f"budget_nno_{escenario}"
 
@@ -192,14 +197,14 @@ def _compute_data(
         for c, row in cw_raw.iterrows():
             cw_by_cohort[pd.Timestamp(c)] = {int(cid): int(cnt) for cid, cnt in row.items()}
 
-    # ── Per-seller NNO y órdenes reales ───────────────────────────────────────
+    # ── Per-seller NNO y órdenes reales (solo para detalle de tabla) ──────────
     per_seller_nno:  dict[tuple, float] = {}
     per_seller_real: dict[tuple, float] = {}
     seller_names:    dict[int, str]     = {}
     real_by_cohort_cal: dict = {}   # (cohort_m, order_m) → orders
     real_by_seller_cal: dict = {}   # (cohort_m, seller_id, order_m) → orders
 
-    if not df_ord.empty:
+    if build_detail and not df_ord.empty:
         # Nombres
         if "seller_name" in df_ord.columns:
             for sid, name in df_ord[["seller_id","seller_name"]].drop_duplicates().values:
@@ -229,23 +234,56 @@ def _compute_data(
             ):
                 per_seller_nno[(pd.Timestamp(c), int(s))] = float(v)
 
-    # ── Acumular forecast por mes ─────────────────────────────────────────────
+    # ── Forecast desde load_forecast (fuente primaria) ───────────────────────
     fc_acc: dict[pd.Timestamp, float] = {m: 0.0 for m in future_months}
 
-    # 1) Cohortes existentes → NNO × seasonal
-    for cohort_m_raw, nno_val in nno.items():
-        cohort_m = pd.Timestamp(cohort_m_raw)
-        if pd.isna(nno_val) or nno_val <= 0:
-            continue
-        cw = cw_by_cohort.get(cohort_m)
-        for m in future_months:
-            if m >= cohort_m:
-                sf = _weighted_sf(m.month, cw) if cw else (
-                    _sf(_COUNTRY_ID.get(pais, 1), m.month)
-                )
-                fc_acc[m] += nno_val * sf
+    # Pre-índices para el detalle por cohorte y seller
+    fc_by_cohort_idx: dict = {}   # cohort_ts → {forecast_m: total_orders}
+    fc_by_seller_idx: dict = {}   # (cohort_ts, seller_id) → {forecast_m: orders}
+    cohorts_with_fc:  set  = set()
 
-    # 2) Cohortes budget (posteriores al último status conocido)
+    if not df_fc.empty:
+        _dfc = df_fc.copy()
+        _dfc["forecast_month"] = pd.to_datetime(_dfc["forecast_month"])
+        _dfc["cohort_month"]   = pd.to_datetime(_dfc["cohort_month"])
+        # Cohorte del mes actual: forzar proyección desde budget (no forecast)
+        if today_m is not None:
+            _dfc = _dfc[_dfc["cohort_month"] != today_m]
+        _dfc_fut = _dfc[_dfc["forecast_month"] > cutoff]
+
+        if not _dfc_fut.empty:
+            # Total por mes calendario → línea del gráfico
+            for fc_m, total in (
+                _dfc_fut.groupby("forecast_month")["forecasted_orders"].sum().items()
+            ):
+                m_ts = pd.Timestamp(fc_m)
+                if m_ts in fc_acc:
+                    fc_acc[m_ts] += float(total)
+
+            # Por cohorte × mes calendario
+            for (c, fc_m), v in (
+                _dfc_fut.groupby(["cohort_month", "forecast_month"])["forecasted_orders"]
+                .sum().items()
+            ):
+                c_ts = pd.Timestamp(c)
+                m_ts = pd.Timestamp(fc_m)
+                if c_ts not in fc_by_cohort_idx:
+                    fc_by_cohort_idx[c_ts] = {}
+                fc_by_cohort_idx[c_ts][m_ts] = float(v)
+                cohorts_with_fc.add(c_ts)
+
+            # Por seller × mes calendario
+            if "seller_id" in _dfc_fut.columns:
+                for (c, s, fc_m), v in (
+                    _dfc_fut.groupby(["cohort_month", "seller_id", "forecast_month"])
+                    ["forecasted_orders"].sum().items()
+                ):
+                    key = (pd.Timestamp(c), int(s))
+                    if key not in fc_by_seller_idx:
+                        fc_by_seller_idx[key] = {}
+                    fc_by_seller_idx[key][pd.Timestamp(fc_m)] = float(v)
+
+    # ── Cohortes budget (futuras sin forecast en el DB) ───────────────────────
     last_status_m = (
         pd.Timestamp(nno_status.index.max()) if not nno_status.empty else cutoff
     )
@@ -254,18 +292,39 @@ def _compute_data(
         start=budget_cohort_start, end=end_month, freq="MS"
     )
 
+    budget_only_cohorts: set = set()  # cohortes del mes actual sin orders ni forecast
+
     for cohort_m in budget_cohort_months:
+        c_ts = pd.Timestamp(cohort_m)
+        if c_ts in cohorts_with_fc:
+            continue  # ya cubierto por load_forecast
         bud_by_cty = _get_bud_nno_by_country(df_bud_raw, cohort_m, bud_col, pais)
+        if not bud_by_cty or not any(v > 0 for v in bud_by_cty.values()):
+            continue  # sin dato presupuestado, omitir
+
+        budget_only_cohorts.add(c_ts)
+        if c_ts not in fc_by_cohort_idx:
+            fc_by_cohort_idx[c_ts] = {}
+
         for m in future_months:
             if m < cohort_m:
                 continue
+            m_total = 0.0
             for cid, bud_nno in bud_by_cty.items():
                 if bud_nno <= 0:
                     continue
                 sf = 0.15 if m == cohort_m else _sf(cid, m.month)
-                fc_acc[m] += bud_nno * sf
+                m_total += bud_nno * sf
+            if m_total > 0:
+                fc_acc[m] += m_total
+                fc_by_cohort_idx[c_ts][m] = (
+                    fc_by_cohort_idx[c_ts].get(m, 0.0) + m_total
+                )
 
     fc_by_month = pd.Series(fc_acc).sort_index() if fc_acc else pd.Series(dtype=float)
+
+    if not build_detail:
+        return real_by_month, fc_by_month, cutoff, []
 
     # ── Detalle por cohorte (para la tabla) ───────────────────────────────────
     cohort_rows = []
@@ -273,11 +332,15 @@ def _compute_data(
     all_cohorts = sorted(set(
         [pd.Timestamp(c) for c in nno.index]
         + [pd.Timestamp(c) for c in nno_status.index]
+        + list(cohorts_with_fc)
+        + list(budget_only_cohorts)   # cohortes del mes corriente sin órdenes
     ))
 
     for cohort_m in all_cohorts:
-        st = str(nno_status.get(cohort_m, "pendiente"))
-        nno_val = float(nno.get(cohort_m, np.nan)) if cohort_m in nno.index else np.nan
+        if cohort_m in budget_only_cohorts:
+            st = "budget"
+        else:
+            st = str(nno_status.get(cohort_m, "pendiente"))
 
         if not df_ord.empty:
             coh_df   = df_ord[df_ord["cohort_month"] == cohort_m]
@@ -287,18 +350,11 @@ def _compute_data(
             sellers  = 0
             real_ord = 0.0
 
-        # Forecast: NNO × seasonal por cada mes futuro
-        cw = cw_by_cohort.get(cohort_m)
-        fc_ord = 0.0
-        if not np.isnan(nno_val) and nno_val > 0:
-            for m in future_months:
-                if m >= cohort_m:
-                    sf = _weighted_sf(m.month, cw) if cw else (
-                        _sf(_COUNTRY_ID.get(pais, 1), m.month)
-                    )
-                    fc_ord += nno_val * sf
+        # Forecast desde load_forecast
+        fc_month_data = fc_by_cohort_idx.get(cohort_m, {})
+        fc_ord = sum(fc_month_data.values())
 
-        # Budget NNO
+        # Budget NNO (referencia)
         bud_by_cty = _get_bud_nno_by_country(df_bud_raw, cohort_m, bud_col, pais)
         bud_nno = sum(bud_by_cty.values()) if bud_by_cty else np.nan
         if isinstance(bud_nno, float) and bud_nno == 0.0:
@@ -311,25 +367,18 @@ def _compute_data(
         )
 
         # Sellers drill-down
-        s_ids = {s for (c, s) in per_seller_nno if c == cohort_m}
-        s_ids |= {s for (c, s) in per_seller_real if c == cohort_m}
+        s_ids = {s for (c, s) in per_seller_real if c == cohort_m}
+        s_ids |= {s for (c, s) in fc_by_seller_idx if c == cohort_m}
         seller_rows = []
         for s_id in sorted(s_ids):
-            s_nno  = per_seller_nno.get((cohort_m, s_id), 0.0)
             s_real = per_seller_real.get((cohort_m, s_id), 0.0)
-            s_fc   = 0.0
+            s_fc_months = fc_by_seller_idx.get((cohort_m, s_id), {})
+            s_fc = sum(s_fc_months.values())
             s_md: dict = {
                 m: v for (c, s, m), v in real_by_seller_cal.items()
                 if c == cohort_m and s == s_id
             }
-            if s_nno > 0:
-                for m in future_months:
-                    if m >= cohort_m:
-                        sf = _weighted_sf(m.month, cw) if cw else (
-                            _sf(_COUNTRY_ID.get(pais, 1), m.month)
-                        )
-                        s_fc += s_nno * sf
-                        s_md[m] = s_nno * sf
+            s_md.update(s_fc_months)
             seller_rows.append({
                 "seller_id":   s_id,
                 "seller_name": seller_names.get(s_id, str(s_id)),
@@ -339,17 +388,11 @@ def _compute_data(
                 "month_data":  s_md,
             })
 
-        # month_data por mes calendario para esta cohorte
+        # month_data: reales + forecast
         _cmd: dict = {
             m: v for (c, m), v in real_by_cohort_cal.items() if c == cohort_m
         }
-        if not np.isnan(nno_val) and nno_val > 0:
-            for m in future_months:
-                if m >= cohort_m:
-                    sf = _weighted_sf(m.month, cw) if cw else (
-                        _sf(_COUNTRY_ID.get(pais, 1), m.month)
-                    )
-                    _cmd[m] = nno_val * sf
+        _cmd.update(fc_month_data)
 
         cohort_rows.append({
             "cohort_month": cohort_m,
@@ -362,38 +405,6 @@ def _compute_data(
             "vs_pct":       vs_pct,
             "month_data":   _cmd,
             "seller_rows":  seller_rows,
-        })
-
-    # Cohortes budget puras
-    for cohort_m in budget_cohort_months:
-        bud_by_cty = _get_bud_nno_by_country(df_bud_raw, cohort_m, bud_col, pais)
-        bud_nno = sum(bud_by_cty.values()) if bud_by_cty else 0.0
-        if bud_nno <= 0:
-            continue
-        fc_total = _project_budget_cohort(cohort_m, future_months, bud_by_cty, pais)
-        _bmd: dict = {}
-        for m in future_months:
-            if m < cohort_m:
-                continue
-            _mv = 0.0
-            for cid, bud_nno_v in bud_by_cty.items():
-                if bud_nno_v <= 0:
-                    continue
-                sf = 0.15 if m == cohort_m else _sf(cid, m.month)
-                _mv += bud_nno_v * sf
-            if _mv > 0:
-                _bmd[m] = _mv
-        cohort_rows.append({
-            "cohort_month": pd.Timestamp(cohort_m),
-            "status":       "budget",
-            "sellers":      0,
-            "real":         0.0,
-            "fc":           fc_total,
-            "total":        fc_total,
-            "budget_nno":   bud_nno,
-            "vs_pct":       np.nan,
-            "month_data":   _bmd,
-            "seller_rows":  [],
         })
 
     cohort_rows.sort(key=lambda r: r["cohort_month"])
@@ -792,11 +803,15 @@ def update_rolling(pais, escenario, pathname, cohort_overrides):
     )
 
     df_ord = load_orders(filters)
+    df_fc  = load_forecast(filters)
 
     if not df_ord.empty:
         df_ord = apply_cohort_overrides(df_ord, cohort_overrides, "order_month")
+    if not df_fc.empty:
+        df_fc = apply_cohort_overrides(df_fc, cohort_overrides, "forecast_month")
 
-    _today = pd.Timestamp.today().replace(day=1).normalize()
+    _today   = pd.Timestamp.today().replace(day=1).normalize()
+    _today_m = _today  # cohorte del mes en curso — fuerza proyección desde budget
     if not df_ord.empty:
         df_ord = df_ord[pd.to_datetime(df_ord["order_month"]) < _today]
 
@@ -809,7 +824,8 @@ def update_rolling(pais, escenario, pathname, cohort_overrides):
     end_month  = pd.Timestamp(f"{_today.year}-12-01")
 
     real_by_m, fc_by_m, cutoff, cohort_rows = _compute_data(
-        df_ord, nno, nno_status, df_bud_raw, pais, escenario, end_month
+        df_ord, nno, nno_status, df_bud_raw, df_fc, pais, escenario, end_month,
+        today_m=_today_m,
     )
 
     if cutoff is None:
@@ -828,24 +844,34 @@ def update_rolling(pais, escenario, pathname, cohort_overrides):
     def _dec_vals(geo):
         f = build_filters(geo, None, "incluir", None)
         d = load_orders(f)
+        d_fc = load_forecast(f)
         if not d.empty:
             d = apply_cohort_overrides(d, cohort_overrides, "order_month")
             d = d[pd.to_datetime(d["order_month"]) < _today]
+        if not d_fc.empty:
+            d_fc = apply_cohort_overrides(d_fc, cohort_overrides, "forecast_month")
         if d.empty:
             return None, None
-        n, ns   = calc_nno_by_cohort(d)
-        _, fc_g, _, _ = _compute_data(d, n, ns, df_bud_raw, geo, escenario, end_month)
+        n, ns = calc_nno_by_cohort(d)
+        _, fc_g, _, _ = _compute_data(
+            d, n, ns, df_bud_raw, d_fc, geo, escenario, end_month,
+            today_m=_today_m, build_detail=False,
+        )
         real_g = d.groupby("order_month")["order_count"].sum()
         real_g.index = pd.to_datetime(real_g.index)
         v25 = float(real_g[_DEC25]) if _DEC25 in real_g.index else None
         v26 = float(fc_g[_DEC26])   if not fc_g.empty and _DEC26 in fc_g.index else None
         return v25, v26
 
-    geo_results = [
-        ("Consolidado", *_dec_vals("CONSOLIDADO")),
-        ("Colombia",    *_dec_vals("COL")),
-        ("México",      *_dec_vals("MEX")),
-    ]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        fut_cons = pool.submit(_dec_vals, "CONSOLIDADO")
+        fut_col  = pool.submit(_dec_vals, "COL")
+        fut_mex  = pool.submit(_dec_vals, "MEX")
+        geo_results = [
+            ("Consolidado", *fut_cons.result()),
+            ("Colombia",    *fut_col.result()),
+            ("México",      *fut_mex.result()),
+        ]
 
     kpis  = _build_kpis(geo_results)
     chart = _build_chart(real_by_m, fc_by_m, cutoff, pais, escenario, end_month)

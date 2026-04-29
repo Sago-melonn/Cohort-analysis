@@ -246,70 +246,61 @@ def _build_chart(
     geo_lbl    = _GEO_LBL.get(pais, pais)
     y_title    = f"{met_lbl} ({unit})" if is_rev else f"{met_lbl} (Órdenes)"
 
-    _start_2025 = pd.Timestamp("2025-01-01")
+    # Rango fijo: Ene 2025 → Dic 2026 (24 meses siempre visibles)
+    _all_months = pd.date_range("2025-01-01", "2026-12-01", freq="MS")
 
-    # Filtrar a partir de Enero 2025
-    series_plot = series[series.index >= _start_2025] if not series.empty else series
-    status_plot = status[status.index >= _start_2025] if not status.empty else status
+    # Índice de la serie con datos reales
+    series_idx = series.index if not series.empty else pd.DatetimeIndex([])
 
-    # ── Construir traza única de barras ───────────────────────────────────────
-    # Meses con valor + meses pendiente (sin M2/M3 aún)
-    series_idx = series_plot.index if not series_plot.empty else pd.DatetimeIndex([])
-    pend_only  = (
-        status_plot.index[
-            (status_plot == "pendiente") & ~status_plot.index.isin(series_idx)
-        ]
-        if not status_plot.empty else pd.DatetimeIndex([])
-    )
-    all_bar_months = series_idx.union(pend_only).sort_values()
+    _color_map = {
+        "completo":  "#4827BE",
+        "parcial":   "#9684E1",
+        "pendiente": "#D4C9F5",
+    }
 
     bar_vals   = []
     bar_colors = []
     bar_texts  = []
 
-    _color_map = {
-        "completo": "#4827BE",
-        "parcial":  "#9684E1",
-        "pendiente": "#D4C9F5",
-    }
-
-    for m in all_bar_months:
-        # Valor
-        if not series_plot.empty and m in series_plot.index:
-            v_raw = series_plot[m]
+    for m in _all_months:
+        # Valor real
+        if not series.empty and m in series_idx:
+            v_raw = series[m]
             v     = float(v_raw) if not pd.isna(v_raw) else 0.0
         else:
             v = 0.0
 
         # Status
         st = "pendiente"
-        if not status_plot.empty and m in status_plot.index:
-            st = str(status_plot[m])
+        if not status.empty and m in status.index:
+            st = str(status[m])
 
         bar_vals.append(v)
         bar_colors.append(_color_map.get(st, "#D4C9F5"))
 
-        month_lbl = f"<b>{m.strftime('%b')}</b>"
-        if v > 0:
+        # Etiqueta: solo valor para actuals (no mes — el eje X ya lo indica)
+        if v > 0 and st in ("completo", "parcial"):
             val_str = f"{v:,.0f}" if is_rev else f"{int(round(v)):,}"
-            bar_texts.append(f"{month_lbl}<br><b>{val_str}</b>")
+            unit_suffix = f" {unit}" if is_rev else ""
+            bar_texts.append(f"<b>{val_str}{unit_suffix}</b>")
         else:
-            bar_texts.append(month_lbl)
+            bar_texts.append("")
+
+    tick_labels = [m.strftime("%b %Y") for m in _all_months]
 
     fig = go.Figure()
 
-    if len(all_bar_months) > 0:
-        fig.add_trace(go.Bar(
-            x=all_bar_months,
-            y=bar_vals,
-            name=met_lbl,
-            marker_color=bar_colors,
-            text=bar_texts,
-            texttemplate="%{text}",
-            textposition="outside",
-            textfont=dict(size=10, color="#1A1659"),
-            hovertemplate=f"%{{x|%b %Y}}<br>{met_lbl}: %{{y:,.1f}}<extra></extra>",
-        ))
+    fig.add_trace(go.Bar(
+        x=_all_months,
+        y=bar_vals,
+        name=met_lbl,
+        marker_color=bar_colors,
+        text=bar_texts,
+        texttemplate="%{text}",
+        textposition="outside",
+        textfont=dict(size=10, color="#1A1659"),
+        hovertemplate=f"%{{x|%b %Y}}<br>{met_lbl}: %{{y:,.1f}}<extra></extra>",
+    ))
 
     # ── Líneas de budget 2026 con etiquetas ───────────────────────────────────
     if not budget.empty:
@@ -340,20 +331,24 @@ def _build_chart(
                 hovertemplate=f"%{{x|%b %Y}}<br>Budget {scen_name}: %{{y:,.1f}}<extra></extra>",
             ))
 
+    x_start = pd.Timestamp("2024-12-15")
+    x_end   = pd.Timestamp("2027-01-15")
+
     fig.update_layout(
         barmode="overlay",
         xaxis=dict(
             title="Cohorte (mes de entrada)",
-            tickformat="%b %Y",
-            tickangle=-30,
+            tickvals=list(_all_months),
+            ticktext=tick_labels,
+            tickangle=-45,
             gridcolor="#f5f5f5",
-            range=[_start_2025 - pd.Timedelta(days=20), None],
+            range=[x_start, x_end],
         ),
         yaxis=dict(title=y_title, gridcolor="#f5f5f5"),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        margin=dict(l=60, r=30, t=80, b=70),
-        height=460,
+        margin=dict(l=60, r=30, t=80, b=90),
+        height=480,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
 
@@ -379,15 +374,14 @@ def _build_table(
     bud_nnr   = f"nnr_{escenario}"
     bud_nno   = f"nno_{escenario}"
 
+    # Rango fijo Ene 2025–Dic 2026; unión con datos reales por si hay cohortes anteriores
+    _fixed_range = list(pd.date_range("2025-01-01", "2026-12-01", freq="MS"))
     all_ts = sorted(set(
-        list(nnr.index if not nnr.empty else [])
-        + list(nno.index if not nno.empty else [])
-        + list(status.index if not status.empty else [])
+        _fixed_range
+        + [pd.Timestamp(c) for c in (nnr.index if not nnr.empty else [])]
+        + [pd.Timestamp(c) for c in (nno.index if not nno.empty else [])]
+        + [pd.Timestamp(c) for c in (status.index if not status.empty else [])]
     ))
-    if not all_ts:
-        return html.Div(html.P("Sin datos.", className="placeholder-hint"))
-
-    all_ts = [pd.Timestamp(c) for c in all_ts]
 
     # ── Factories ─────────────────────────────────────────────────────────────
     def _hc(text, w, align="right", bg="#1A1659"):
@@ -452,8 +446,12 @@ def _build_table(
                   bold=False, show_status=False, expandable=False):
         lb = lbl_bg or bg
 
-        nnr_v = sum(_safe(nnr, c) for c in cohorts if not np.isnan(_safe(nnr, c))) or np.nan
-        nno_v = sum(_safe(nno, c) for c in cohorts if not np.isnan(_safe(nno, c))) or np.nan
+        _nnr_vals = [_safe(nnr, c) for c in cohorts if not np.isnan(_safe(nnr, c))]
+        _nno_vals = [_safe(nno, c) for c in cohorts if not np.isnan(_safe(nno, c))]
+        nnr_v         = sum(_nnr_vals)
+        nno_v         = sum(_nno_vals)
+        _nnr_has_data = len(_nnr_vals) > 0
+        _nno_has_data = len(_nno_vals) > 0
         sel_v = int(sum(_safe(sellers, c, 0) for c in cohorts))
 
         # Budget — solo 2026
@@ -467,11 +465,11 @@ def _build_table(
             bud_idx = budget.reindex([pd.Timestamp(c) for c in bud_cohorts])
             if bud_nnr in budget.columns:
                 nnr_bud_v = float(bud_idx[bud_nnr].sum(skipna=True))
-                if nnr_bud_v > 0 and not np.isnan(nnr_v):
+                if nnr_bud_v > 0 and _nnr_has_data:
                     nnr_pct = nnr_v / nnr_bud_v - 1
             if bud_nno in budget.columns:
                 nno_bud_v = float(bud_idx[bud_nno].sum(skipna=True))
-                if nno_bud_v > 0 and not np.isnan(nno_v):
+                if nno_bud_v > 0 and _nno_has_data:
                     nno_pct = nno_v / nno_bud_v - 1
 
         has_bud = bool(bud_cohorts)
@@ -579,7 +577,7 @@ def update_nnr(metric, pais, moneda, fx_cop, fx_mxn, escenario, pathname, cohort
     if pathname != "/nnr":
         raise PreventUpdate
 
-    metric   = metric   or "orders"
+    metric   = metric   or "revenue"
     pais     = pais     or "CONSOLIDADO"
     moneda   = moneda   or "local"
     escenario = escenario or "base"
