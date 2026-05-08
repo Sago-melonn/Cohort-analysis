@@ -120,6 +120,26 @@ El código `Código Cohortes V4 (...).txt` es una app **React + Firebase/Firesto
 
 > ⚠️ Usar siempre estos nombres y definiciones. No mezclar terminología.
 
+### Nombres visibles vs acrónimos internos (cambio 2026-05-08)
+
+A partir del 2026-05-08 las etiquetas visibles para el usuario cambiaron:
+
+| Métrica (definición) | Nombre visible | Acrónimo interno (código) |
+|---|---|---|
+| Net Revenue Retention temporal (YoY) | **NDR-T** "Net Dollar Retention Temporal" | NRR (`metric=nrr`) |
+| Net Order Retention temporal (YoY) | **NOR-T** "Net Order Retention Temporal" | NOR (`metric=nor`) |
+| Net Dollar Retention atemporal (curva por cohorte) | **NDR-AT** "Net Dollar Retention Atemporal" | NDR (`metric=revenue`) |
+| Net Order Retention atemporal (curva por cohorte) | **NOR-AT** "Net Order Retention Atemporal" | ODR (`metric=orders`) |
+| Net New Revenue | **NNR** | NNR |
+| Net New Orders | **NNO** | NNO |
+
+Páginas:
+- `/nor` → "Net Dollar Retention Temporal / Net Order Retention Temporal" (sidebar: **NDR-T / NOR-T**)
+- `/ndr` → "Net Dollar Retention Atemporal / Net Order Retention Atemporal" (sidebar: **NDR-AT / NOR-AT**)
+- `/nnr`, `/rolling`, `/inputs`, `/config`: sin cambios
+
+Los IDs Dash (`nor-*`, `ndr-*`), URLs, valores internos de radio (`"nor"`, `"nrr"`, `"orders"`, `"revenue"`), nombres de archivo y CSS classes se mantienen — solo cambian los strings de UI. Las definiciones del glosario abajo siguen usando los acrónimos clásicos por consistencia con el código.
+
 ### NNR — Net New Revenue
 **Qué es:** El "tamaño" real de un seller nuevo al entrar a Melonn.
 
@@ -146,7 +166,7 @@ NNO(seller) = avg( Orders(M2) + Orders(M3) )
 
 ---
 
-### NRR — Net Revenue Retention
+### NRR — Net Revenue Retention (label visible: **NDR-T**)
 **Qué es:** Crecimiento YoY del mismo grupo de clientes maduros (pre-2025).
 
 **Universo (dos modos, seleccionable en UI):**
@@ -162,7 +182,7 @@ NNO(seller) = avg( Orders(M2) + Orders(M3) )
 4. NRR(M) = smooth_total(M) / smooth_total(M-12)
 ```
 - Suavizado a nivel de cohorte (no de seller)
-- Sin forecast de revenue — la serie se corta en el último mes real
+- **Forecast de revenue (desde 2026-05-08):** derivado del orders forecast vía factor rev/order por seller. Ver `compute_revenue_forecast()` en `transforms.py`
 
 **Resultado tipo 110%** = clientes crecen YoY
 
@@ -172,7 +192,7 @@ NNO(seller) = avg( Orders(M2) + Orders(M3) )
 
 ---
 
-### NOR — Net Order Retention
+### NOR — Net Order Retention (label visible: **NOR-T**)
 **Qué es:** Igual que NRR pero en órdenes. Métrica preferida por ser más limpia.
 
 **Universo (dos modos, seleccionable en UI):**
@@ -197,7 +217,7 @@ NNO(seller) = avg( Orders(M2) + Orders(M3) )
 
 ---
 
-### NDR — Net Dollar Retention
+### NDR — Net Dollar Retention (label visible: **NDR-AT**)
 **Qué es:** Curva atemporal de cuánto crece el revenue de una cohorte nueva respecto a su M0.
 
 **Fórmula:**
@@ -225,8 +245,8 @@ Cohorte     | M0    | M1   | M2   | ... | M13  | ... | M25
 
 ---
 
-### ODR — Order Dollar Retention
-**Qué es:** Igual que NDR pero en órdenes. Sin sigla oficial en el mercado — nombre interno Melonn.
+### ODR — Order Dollar Retention (label visible: **NOR-AT**)
+**Qué es:** Igual que NDR pero en órdenes. Renombrado a "Net Order Retention Atemporal" en UI desde 2026-05-08.
 
 **Fórmula:**
 ```
@@ -402,8 +422,8 @@ total_revenue =
 | App v2 — Landing page | ✅ Hecho | Logo, mes cerrado/parcial, botón "Entrar al Dashboard" |
 | App v2 — Scaffold (layout + sidebar + routing) | ✅ Hecho | Shell flex row, sidebar sticky, routing con PreventUpdate |
 | App v2 — Vista Inputs (heatmap + KPIs) | ✅ Hecho | Tabla custom 2 niveles, drill-down inline, KPIs, sticky filter bar |
-| App v2 — Vista NOR/NRR | ✅ Hecho | KPIs + Gráfico 1 (% Ratio) + Gráfico 2 (evolución absoluta base fija) + trazabilidad + Churn — cb_nor.py |
-| App v2 — Vista NDR/ODR | ✅ Hecho | Gráfico + tabla hitos + heatmap absolutos (agrupado año/mes) + tabla ratios Mn/M1 + exportación Excel 2 hojas — cb_ndr.py |
+| App v2 — Vista NDR-T/NOR-T (ex NOR/NRR) | ✅ Hecho | KPIs + Gráfico 1 (% Ratio) + Gráfico 2 (evolución absoluta base fija) + trazabilidad + Churn — cb_nor.py. Forecast en revenue (2026-05-08) |
+| App v2 — Vista NDR-AT/NOR-AT (ex NDR/ODR) | ✅ Hecho | Gráfico + tabla hitos + heatmap absolutos (agrupado año/mes) + tabla ratios Mn/M1 (con toggle Dash-controlado custom) + exportación Excel 2 hojas + forecast revenue — cb_ndr.py |
 | App v2 — Vista NNR/NNO | ✅ Hecho | KPIs 2 filas, gráfico barras por mes desde 2025, tabla dual NNR+NNO con drill-down — cb_nnr.py |
 | App v2 — Rolling Forecast Total | ✅ Hecho | Órdenes reales + proyección + tabla cohortes por mes calendario — cb_rolling.py |
 | Deploy | 🔴 Pendiente | |
@@ -507,6 +527,14 @@ total_revenue =
 | 2026-04-25 | Rolling Forecast: tabla pivot cohortes × meses calendario (Ene 2025–Dic 2026). Filas: Year→Q→Mes→Seller (html.Details). Columnas pasadas con header oscuro #1A1659, columnas forecast con header #7059B0 y fondo celda #FFF9F4. Total al final. |
 | 2026-04-25 | Rolling Forecast: KPI card única "Dic '26 YoY Growth" — siempre 3 cards (Consolidado, Colombia, México) independiente del filtro de país. Calcula Dec 2025 real vs Dec 2026 forecast para cada geo. |
 | 2026-04-25 | run.py warmup: cambiado de 4 threads paralelos a llamadas secuenciales dentro del daemon thread. Eliminaba contención de conexiones Redshift. |
+| 2026-05-08 | Rename de páginas (UI labels): NRR/NOR → "NDR-T / NOR-T" (Temporal); NDR/ODR → "NDR-AT / NOR-AT" (Atemporal). Sidebar, títulos H2, radios "Métrica", KPIs, trazas de chart. IDs internos, URLs, valores radio, archivos, CSS classes, variables Python sin tocar. NNR/NNO y Rolling FC sin cambios. |
+| 2026-05-08 | Forecast de revenue derivado del orders forecast: `compute_revenue_forecast()` en transforms.py. Factor rev/order por seller usando últimos 3 meses cerrados del año en curso, mín. 30 órdenes para aceptar factor propio. Fallback hierarchy: (country, segment) median → country median → global median. Si > 50% del volumen forecast cae a fallback country/global → retorna df vacío (baja confianza, no se muestra forecast). Se aplica en NDR-T (cb_nor.py) y NDR-AT revenue (cb_ndr.py). |
+| 2026-05-08 | `calc_retention_series()` parametrizado con `fc_month_col` y `fc_value_col` (defaults preservan comportamiento) para soportar revenue forecast con `display_value`. |
+| 2026-05-08 | `_abs_fixed_universe()` parametrizado con `fc_value_col` — gráfico 2 (evolución absoluta) ahora muestra forecast también para revenue. |
+| 2026-05-08 | NDR-T chart fix: `x_end` se extiende a 2026-12-31 cuando `forecast=Sí` para CUALQUIER métrica (antes solo aplicaba a NOR). |
+| 2026-05-08 | NDR-AT bug fix tabla de ratios — la tabla se ocultaba al expandir años con forecast=on. Reemplazado `<html.Details>` nativo por toggle controlado: `<div class="ct-ratio-group">` + `<div class="ct-ratio-toggle">` + `<div class="ct-ratio-body">` + clientside_callback con event delegation que toggleaba clase `is-open`. CSS final: layout block (sin display:contents) — `.ct-ratio-body { display: none }` por defecto, `.ct-ratio-group.is-open > .ct-ratio-body { display: block }`. La tabla de suavizado mantiene `<details>` nativo + display:contents (esa sí funciona). `debug=False` en run.py. |
+| 2026-05-08 | NDR-AT preservación de selección de años: `Output("ndr-year-select", "value")` ahora respeta selección manual del usuario. Si `current_years` no es vacío se intersecta con `valid_years` (años con peso ≥ umbral); si todos los seleccionados se vuelven inválidos cae a `default_active`. Antes cualquier cambio de filtro reseteaba los pills al default. |
+| 2026-05-08 | Rolling FC: KPI cards cambiadas de "Dic 'YY YoY" a "Q4 'YY YoY". Suma Oct+Nov+Dec del año previo (real) vs año en curso (real si mes cerrado, forecast si futuro). Año dinámico (`_today.year`) — labels rotan automáticamente al cambiar de año. |
 
 ---
 
@@ -529,6 +557,26 @@ total_revenue =
 ---
 
 ## 💬 NOTAS DE SESIÓN
+
+### Sesión 2026-05-08
+- **Rename de UI** (labels visibles): NRR/NOR → "NDR-T / NOR-T", NDR/ODR → "NDR-AT / NOR-AT". Detalle en glosario "Nombres visibles vs acrónimos internos".
+- **Bug fix tabla de ratios NDR-AT** (intermitente, solo con forecast=on, expandir año hacía desaparecer la tabla):
+  - Iteraciones: `debug=True` → `False` en run.py · `display: contents` en `<details>` · finalmente reemplazo del `<details>` nativo por toggle Dash-controlado con event delegation.
+  - CSS final usa `display: block` (no `contents`) en la tabla de ratios; la tabla de suavizado sigue con `<details>` nativo + display:contents porque ahí sí funcionaba.
+  - Diagnóstico clave del usuario: el `<div class="ct-wrap">` desaparecía del DOM al hacer click sin disparar callback Dash. Apuntaba a layout/reconciliation issue, no a JS error.
+- **NDR-AT preserva años seleccionados** al cambiar otros filtros (antes reseteaba a default por umbral). Lógica nueva: `State("ndr-year-select", "value")` + intersect con `valid_years`.
+- **Forecast de revenue** (NDR-T y NDR-AT):
+  - Nueva función `compute_revenue_forecast()` en transforms.py.
+  - Factor rev/order por seller, ventana = últimos 3 meses cerrados del año en curso, mín. 30 órdenes para factor propio.
+  - Fallback hierarchy: (country, segment) → country → global.
+  - Si > 50% del volumen forecast cae a fallback country/global, retorna df vacío y no se muestra forecast (decisión de baja confianza, caso raro).
+  - Se aplica en cb_nor.py (chart 1, chart 2 evolución absoluta, trazabilidad) y cb_ndr.py (heatmap absolutos + ratios).
+  - Bug fix relacionado: `x_end` del chart 1 en cb_nor.py se extendía solo cuando `metric=nor`; ahora se extiende para cualquier métrica si `forecast=Sí`.
+- **Rolling FC**: KPI cards "Dic 'YY YoY" → "Q4 'YY YoY". Suma Oct+Nov+Dec con lógica robusta (real para meses cerrados, forecast para futuros). Año dinámico desde `_today.year`.
+- **Filtros: caso 2 (resetear filtros al cambiar otro)** resuelto solo en NDR-AT (era el único callback que escribía a sus propios filtros). NOR/NRR/NNR no presentaban el problema.
+- **Próximos pasos:**
+  - [ ] Caso 3 (filtros se resetean al hacer F5): plan propuesto con `persistence=True` + `persistence_type="local"` en `components/page_filters.py`. Pendiente de aprobación del usuario.
+  - [ ] Deploy.
 
 ### Sesión 2026-04-25 (parte 2)
 - **Vista NNR/NNO completada:**
