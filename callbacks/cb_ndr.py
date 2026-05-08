@@ -26,6 +26,7 @@ from data.transforms import (
     apply_cohort_overrides,
     build_filters,
     calc_cohort_matrix,
+    compute_revenue_forecast,
     prepare_revenue,
     revenue_display_unit,
 )
@@ -92,7 +93,7 @@ def ndr_layout() -> html.Div:
     return html.Div(
         [
             html.Div(
-                [html.H2("Net Dollar Retention / Order Dollar Retention", className="page-title")],
+                [html.H2("Net Dollar Retention Atemporal / Net Order Retention Atemporal", className="page-title")],
                 className="page-header",
             ),
             ndr_filters(),
@@ -110,8 +111,9 @@ def ndr_layout() -> html.Div:
                 dcc.Download(id="ndr-download"),
             ], style={"display": "flex", "gap": "10px", "padding": "8px 0"}),
             dcc.Store(id="ndr-store"),
-            html.Div(id="ndr-pills-dummy",      style={"display": "none"}),
-            html.Div(id="ndr-year-pills-dummy", style={"display": "none"}),
+            html.Div(id="ndr-pills-dummy",        style={"display": "none"}),
+            html.Div(id="ndr-year-pills-dummy",   style={"display": "none"}),
+            html.Div(id="ndr-toggle-init-dummy",  style={"display": "none"}),
         ],
         className="page",
     )
@@ -154,6 +156,30 @@ clientside_callback(
     """,
     Output("ndr-year-pills-dummy", "style"),
     Input("ndr-year-select", "value"),
+    prevent_initial_call=False,
+)
+
+
+# Attach del listener de toggle para la tabla de ratios.
+# Event delegation en document → un solo listener cubre todos los year rows
+# (incluso los que se rendericen después por cambios de filtros).
+clientside_callback(
+    """
+    function(_) {
+        if (window._ndrRatioToggleInit) return window.dash_clientside.no_update;
+        window._ndrRatioToggleInit = true;
+        document.addEventListener("click", function (e) {
+            var toggle = e.target.closest(".ct-ratio-toggle");
+            if (!toggle) return;
+            var group = toggle.closest(".ct-ratio-group");
+            if (!group) return;
+            group.classList.toggle("is-open");
+        });
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("ndr-toggle-init-dummy", "style"),
+    Input("url", "pathname"),
     prevent_initial_call=False,
 )
 
@@ -267,12 +293,12 @@ def _compute_seller_data(
 # ── Sección: Gráfico ──────────────────────────────────────────────────────────
 
 _CHART_MAX_LM = 37   # x-axis cap para el gráfico de curva promedio
-_TIPO_LBL = {"revenue": "NDR", "orders": "ODR"}
+_TIPO_LBL = {"revenue": "NDR-AT", "orders": "NOR-AT"}
 _GEO_LBL  = {"CONSOLIDADO": "Consolidado", "COL": "COL", "MEX": "MEX"}
 
 
 def _chart_title(metric: str, pais: str) -> str:
-    tipo = _TIPO_LBL.get(metric, "ODR")
+    tipo = _TIPO_LBL.get(metric, "NOR-AT")
     geo  = _GEO_LBL.get(pais, pais)
     return f"{tipo} — {geo}"
 
@@ -394,7 +420,7 @@ def _build_averages_table(
     """Tabla de promedios de ratio Mn/M1 en los hitos clave."""
 
     hitos_present = [lm for lm in _HITOS if lm in all_lm]
-    tipo = _TIPO_LBL.get(metric, "ODR")
+    tipo = _TIPO_LBL.get(metric, "NOR-AT")
     geo  = _GEO_LBL.get(pais, pais)
     title = f"Data points {tipo} — {geo}"
 
@@ -645,7 +671,7 @@ def _build_ratio_heatmap(
     simple_ratio_avgs: dict,
     weighted_ratio_avgs: dict,
     all_lm: list,
-    title: str = "Ratios NDR/ODR por cohorte (Mn / M1)",
+    title: str = "Ratios NDR-AT/NOR-AT por cohorte (Mn / M1)",
     deselected_years: "set | None" = None,
     fc_mask: "pd.DataFrame | None" = None,
 ) -> html.Div:
@@ -811,15 +837,16 @@ def _build_ratio_heatmap(
         if len(cohorts_in_year) <= 1:
             groups.append(html.Div(
                 [html.Div(yr_cells, className="ct-row ct-year-row")] + detail_rows,
-                className="ct-group-nodrill",
+                className="ct-ratio-nodrill",
             ))
         else:
-            groups.append(html.Details(
-                [
-                    html.Summary(year_row, className="ct-summary"),
-                    html.Div(detail_rows, className="ct-detail-body"),
-                ],
-                className="ct-group",
+            # Toggle controlado por Dash (no <details> nativo) — evita el bug
+            # de reconciliación que oculta la tabla al expandir con forecast=on.
+            year_toggle = html.Div(yr_cells, className="ct-row ct-year-row ct-ratio-toggle")
+            body        = html.Div(detail_rows, className="ct-ratio-body")
+            groups.append(html.Div(
+                [year_toggle, body],
+                className="ct-ratio-group",
             ))
 
     # ── Filas de promedio ─────────────────────────────────────────────────────
@@ -890,10 +917,11 @@ def _build_ratio_heatmap(
     Input("ndr-churn",     "value"),
     Input("ndr-forecast",  "value"),
     Input("url",           "pathname"),
+    State("ndr-year-select",  "value"),
     State("cohort-overrides", "data"),
     prevent_initial_call=False,
 )
-def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_on, pathname, cohort_overrides):
+def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_on, pathname, current_years, cohort_overrides):
     if pathname != "/ndr":
         raise PreventUpdate
 
@@ -954,9 +982,9 @@ def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_
     actual_max_lm = df_raw.groupby("cohort_month")["lifecycle_month"].max()
     actual_max_lm.index = pd.to_datetime(actual_max_lm.index)
 
-    # Extender con forecast (solo ODR — forecast solo cubre órdenes)
+    # Extender con forecast (orders directo; revenue derivado vía factor rev/order)
     forecast_on = forecast_on or "no"
-    forecast_active = (forecast_on == "si") and not is_rev
+    forecast_active = (forecast_on == "si")
     df_combined = df_raw
     fc_agg = pd.DataFrame()        # forecast agregado por cohorte × lm
     df_fc_sellers = pd.DataFrame() # forecast con seller_name para drill-down
@@ -976,12 +1004,27 @@ def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_
                 how="left",
             )
             df_fc = df_fc[df_fc["lifecycle_month"] > df_fc["_max_lm"]].drop(columns=["_max_lm"])
+
+            # Para revenue: convertir df_fc (orders) → revenue vía factor por seller.
+            # compute_revenue_forecast retorna df vacío si baja confianza
+            # (>50% de orders forecast en fallback country/global) → entonces no
+            # mostramos forecast en revenue (forecast_active queda True pero df_fc
+            # se vuelve vacío y el flujo siguiente lo ignora).
+            if is_rev and not df_fc.empty:
+                df_orders_n  = apply_cohort_overrides(load_orders(filters),  cohort_overrides, "order_month")
+                df_revenue_n = apply_cohort_overrides(load_revenue(filters), cohort_overrides, "revenue_month")
+                df_fc = compute_revenue_forecast(df_orders_n, df_revenue_n, df_fc)
+                if not df_fc.empty:
+                    df_fc = prepare_revenue(df_fc, pais, moneda, fx_cop, fx_mxn)
+                # df_fc ahora tiene columna `display_value` = val_col
+
             if not df_fc.empty:
+                fc_value_col = val_col if is_rev else "forecasted_orders"
                 fc_agg = (
-                    df_fc.groupby(["cohort_month", "lifecycle_month"])["forecasted_orders"]
+                    df_fc.groupby(["cohort_month", "lifecycle_month"])[fc_value_col]
                     .sum()
                     .reset_index()
-                    .rename(columns={"forecasted_orders": val_col})
+                    .rename(columns={fc_value_col: val_col})
                 )
                 # Seller names desde actuals para el drill-down
                 _seller_nm = (
@@ -993,7 +1036,8 @@ def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_
                     _fc_s["seller_id"].map(_seller_nm)
                     .fillna(_fc_s["seller_id"].astype(str))
                 )
-                _fc_s = _fc_s.rename(columns={"forecasted_orders": val_col})
+                if not is_rev:
+                    _fc_s = _fc_s.rename(columns={"forecasted_orders": val_col})
                 df_fc_sellers = _fc_s[
                     ["cohort_month", "seller_id", "seller_name", "lifecycle_month", val_col]
                 ]
@@ -1054,8 +1098,20 @@ def update_ndr(metric, pais, moneda, fx_cop, fx_mxn, segmentos, churn, forecast_
     threshold = _MIN_YEAR_WEIGHT_BY_UNIT.get(unit, 100.0)
     year_options = [{"label": str(y), "value": str(y)}
                     for y in sorted(year_weights_s.index)]
-    year_values  = [str(y) for y, w in year_weights_s.items()
-                    if float(w) >= threshold]
+    valid_years  = {str(y) for y in year_weights_s.index}
+    default_active = [str(y) for y, w in year_weights_s.items()
+                      if float(w) >= threshold]
+
+    # Preserva la selección manual del usuario al cambiar otros filtros.
+    # Solo aplica el default cuando year-select está vacío (carga inicial o
+    # el usuario deseleccionó todo). Si tenía selección, intersecta con
+    # las opciones nuevas para descartar años que ya no existen.
+    if current_years:
+        year_values = [y for y in current_years if y in valid_years]
+        if not year_values:
+            year_values = default_active
+    else:
+        year_values = default_active
 
     # ── Construir tablas raw y suavizado ──────────────────────────────────────
     if not df_fc_sellers.empty:
@@ -1175,7 +1231,7 @@ def update_ratio_section(store, selected_years):
     chart    = _build_chart(simple_ratio_avgs, weighted_ratio_avgs, metric, pais, fc_mask=fc_mask)
     averages = _build_averages_table(simple_ratio_avgs, weighted_ratio_avgs, all_lm, metric, pais)
 
-    tipo     = _TIPO_LBL.get(metric, "ODR")
+    tipo     = _TIPO_LBL.get(metric, "NOR-AT")
     geo      = _GEO_LBL.get(pais, pais)
     heatmap_ratio = _build_ratio_heatmap(
         smooth_df,
@@ -1237,7 +1293,7 @@ def _df_to_excel(buf: io.BytesIO, sheets: "dict[str, pd.DataFrame]") -> None:
     prevent_initial_call=True,
 )
 def export_ndr(n_clicks, store, selected_years):
-    """Exporta un Excel con tres hojas: Raw, Absolutos (suavizado) y Ratios NDR-ODR."""
+    """Exporta un Excel con tres hojas: Raw, Absolutos (suavizado) y Ratios NDR-AT NOR-AT."""
     if not store:
         raise PreventUpdate
 
@@ -1333,7 +1389,7 @@ def export_ndr(n_clicks, store, selected_years):
         sheets = {
             "Raw":            df_raw_exp,
             "Absolutos":      df_abs,
-            "Ratios NDR-ODR": pd.DataFrame(ratio_rows),
+            "Ratios NDR-AT NOR-AT": pd.DataFrame(ratio_rows),
         }
 
     buf = io.BytesIO()

@@ -524,6 +524,15 @@ details[open] > .year-summary::before { transform: rotate(90deg); }
   align-items: center !important;
 }
 
+/* Details groups: display:contents para que summary/body sean hijos
+   directos del flex column de .ct-table — evita reconciliación rara
+   de React con <details> como flex item. */
+.ct-group,
+.ct-group-nodrill,
+.ct-cohort-group {
+  display: contents;
+}
+
 /* Summary (dispara el Details) */
 .ct-summary {
   list-style: none;
@@ -597,6 +606,48 @@ details[open] > .year-summary::before { transform: rotate(90deg); }
 }
 .ct-cohort-group[open] > .ct-cohort-summary .ct-month-label::before {
   transform: rotate(90deg);
+}
+
+/* ── Tabla de ratios — toggle Dash-controlado (sin <details>) ─ */
+/* Layout block normal: .ct-ratio-group es flex item de .ct-table.
+   Toggle (.ct-row) y body se apilan adentro. Sin display: contents
+   para evitar quirks de layout que estaban escondiendo la tabla. */
+.ct-ratio-group,
+.ct-ratio-nodrill {
+  display: block;
+}
+
+.ct-ratio-body {
+  display: none;
+}
+.ct-ratio-group.is-open > .ct-ratio-body {
+  display: block;
+}
+
+.ct-ratio-toggle {
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.ct-ratio-toggle:hover { background: var(--light-lilac); }
+
+.ct-ratio-toggle .ct-year-label::before {
+  content: "▶";
+  font-size: 8px;
+  color: var(--soft-lilac);
+  margin-right: 8px;
+  transition: transform 0.18s ease;
+  display: inline-block;
+}
+.ct-ratio-group.is-open .ct-ratio-toggle .ct-year-label::before {
+  transform: rotate(90deg);
+}
+
+.ct-ratio-nodrill .ct-year-label::before {
+  content: "·";
+  font-size: 14px;
+  color: var(--card-border);
+  margin-right: 8px;
+  line-height: 0;
 }
 
 /* Filas de sellers (tercer nivel) */

@@ -32,6 +32,7 @@ from data.transforms import (
     apply_cohort_overrides,
     build_filters,
     calc_retention_series,
+    compute_revenue_forecast,
     prepare_revenue,
     revenue_display_unit,
 )
@@ -45,7 +46,7 @@ def nor_layout() -> html.Div:
     return html.Div(
         [
             html.Div(
-                [html.H2("Net Revenue Retention / Net Order Retention", className="page-title")],
+                [html.H2("Net Dollar Retention Temporal / Net Order Retention Temporal", className="page-title")],
                 className="page-header",
             ),
             nor_filters(),
@@ -146,13 +147,14 @@ def _abs_fixed_universe(
     month_col: str,
     fixed_cutoff: pd.Timestamp,
     df_fc: pd.DataFrame | None,
+    fc_value_col: str = "forecasted_orders",
 ) -> pd.DataFrame:
     """
     Serie absoluta con universo fijo (cohorts ≤ fixed_cutoff).
 
     Suavizado rolling 3 por cohorte (mismo que calc_retention_series),
-    luego suma por mes. Para forecast: suma directa de forecasted_orders
-    para cohorts ≤ fixed_cutoff en meses futuros.
+    luego suma por mes. Para forecast: suma directa de fc_value_col
+    para cohorts ≤ fixed_cutoff en meses futuros (default: forecasted_orders).
 
     Retorna DataFrame: month_col | smooth_total | is_forecast
     """
@@ -192,12 +194,12 @@ def _abs_fixed_universe(
             fc_future = fc_f[fc_f["forecast_month"] > last_actual]
             if not fc_future.empty:
                 fc_m = (
-                    fc_future.groupby("forecast_month")["forecasted_orders"]
+                    fc_future.groupby("forecast_month")[fc_value_col]
                     .sum()
                     .reset_index()
                     .rename(columns={
                         "forecast_month": month_col,
-                        "forecasted_orders": "smooth_total",
+                        fc_value_col: "smooth_total",
                     })
                 )
                 fc_m["is_forecast"] = True
@@ -432,9 +434,6 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
             .strftime("%Y-%m-%d")
     )
 
-    if metric == "nrr":
-        use_forecast = "no"
-
     last_closed = _last_closed_month()
 
     filters   = build_filters(pais, segmentos, churn, None)
@@ -442,9 +441,17 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
     df_rev    = apply_cohort_overrides(load_revenue(filters), cohort_overrides, "revenue_month")
     df_rev_p  = prepare_revenue(df_rev, pais, moneda, fx_cop, fx_mxn)
 
-    df_fc = None
+    df_fc        = None
+    df_fc_rev_p  = None
     if use_forecast == "si":
         df_fc = apply_cohort_overrides(load_forecast(filters), cohort_overrides, "forecast_month")
+
+        # Revenue forecast derivado del orders forecast vía factor rev/order
+        # por seller (últimos 3 meses del año en curso, mín. 30 órdenes con
+        # fallback segmento → país → global). Df vacío si baja confianza.
+        df_fc_rev = compute_revenue_forecast(df_orders, df_rev, df_fc)
+        if not df_fc_rev.empty:
+            df_fc_rev_p = prepare_revenue(df_fc_rev, pais, moneda, fx_cop, fx_mxn)
 
     df_orders_cut = (
         df_orders[df_orders["order_month"] <= last_closed]
@@ -461,7 +468,8 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
     )
     nrr_df = calc_retention_series(
         df_rev_p_cut, "display_value", "revenue_month",
-        universo, corte_base, None,
+        universo, corte_base, df_fc_rev_p,
+        fc_month_col="forecast_month", fc_value_col="display_value",
     )
 
     nor_actual = (
@@ -501,17 +509,17 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
 
     if metric == "nor":
         kpis = [
-            _kpi_card("NOR 3M",         _fmt_pct(nor_3m),  "Últimos 3 meses cerrados",   _ratio_variant(nor_3m)),
-            _kpi_card("NOR último mes",  _fmt_pct(nor_last), last_closed_lbl,             _ratio_variant(nor_last)),
-            _trend_card("Tendencia NOR", nor_trend),
-            _kpi_card("NRR 3M (ref.)",   _fmt_pct(nrr_3m),  "Revenue — 3 meses cerrados", _ratio_variant(nrr_3m)),
+            _kpi_card("NOR-T 3M",         _fmt_pct(nor_3m),  "Últimos 3 meses cerrados",   _ratio_variant(nor_3m)),
+            _kpi_card("NOR-T último mes",  _fmt_pct(nor_last), last_closed_lbl,             _ratio_variant(nor_last)),
+            _trend_card("Tendencia NOR-T", nor_trend),
+            _kpi_card("NDR-T 3M (ref.)",   _fmt_pct(nrr_3m),  "Revenue — 3 meses cerrados", _ratio_variant(nrr_3m)),
         ]
     else:
         kpis = [
-            _kpi_card("NRR 3M",         _fmt_pct(nrr_3m),  "Últimos 3 meses cerrados",   _ratio_variant(nrr_3m)),
-            _kpi_card("NRR último mes",  _fmt_pct(nrr_last), last_closed_lbl,             _ratio_variant(nrr_last)),
-            _trend_card("Tendencia NRR", nrr_trend),
-            _kpi_card("NOR 3M (ref.)",   _fmt_pct(nor_3m),  "Órdenes — 3 meses cerrados", _ratio_variant(nor_3m)),
+            _kpi_card("NDR-T 3M",         _fmt_pct(nrr_3m),  "Últimos 3 meses cerrados",   _ratio_variant(nrr_3m)),
+            _kpi_card("NDR-T último mes",  _fmt_pct(nrr_last), last_closed_lbl,             _ratio_variant(nrr_last)),
+            _trend_card("Tendencia NDR-T", nrr_trend),
+            _kpi_card("NOR-T 3M (ref.)",   _fmt_pct(nor_3m),  "Órdenes — 3 meses cerrados", _ratio_variant(nor_3m)),
         ]
 
     # ── Gráfico 1 — % Ratio ───────────────────────────────────────────────────
@@ -520,7 +528,7 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
     x_start = pd.Timestamp("2025-01-01")
     x_end   = (
         pd.Timestamp("2026-12-31")
-        if metric == "nor" and use_forecast == "si"
+        if use_forecast == "si"
         else last_closed
     )
     x_pad = pd.DateOffset(weeks=3)
@@ -610,14 +618,18 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
             nor_df[nor_df["is_forecast"]].dropna(subset=["ratio"])
             if use_forecast == "si" and not nor_df.empty else None
         )
-        _add_ratio_trace(fig1, nor_act, nor_fc, "#4827BE", "#F97316", "NOR", is_orders=True)
+        _add_ratio_trace(fig1, nor_act, nor_fc, "#4827BE", "#F97316", "NOR-T", is_orders=True)
     else:
         nrr_act = (
             nrr_df[~nrr_df["is_forecast"] & (nrr_df["month"] <= last_closed)]
             .dropna(subset=["ratio"])
             if not nrr_df.empty else pd.DataFrame()
         )
-        _add_ratio_trace(fig1, nrr_act, None, "#22C55E", "#F97316", "NRR", is_orders=False)
+        nrr_fc = (
+            nrr_df[nrr_df["is_forecast"]].dropna(subset=["ratio"])
+            if use_forecast == "si" and not nrr_df.empty else None
+        )
+        _add_ratio_trace(fig1, nrr_act, nrr_fc, "#22C55E", "#F97316", "NDR-T", is_orders=False)
 
     _active_df = nor_df if metric == "nor" else nrr_df
     if not _active_df.empty:
@@ -664,8 +676,16 @@ def update_nor(metric, pais, moneda, fx_cop, fx_mxn,
         df_src2 = df_orders_cut if is_orders else df_rev_p_cut
         val_col2 = "order_count" if is_orders else "display_value"
         month_col2 = "order_month" if is_orders else "revenue_month"
-        fc_for_abs = df_fc if is_orders else None
-        abs_series = _abs_fixed_universe(df_src2, val_col2, month_col2, fixed_cutoff, fc_for_abs)
+        if is_orders:
+            fc_for_abs   = df_fc
+            fc_val_col2  = "forecasted_orders"
+        else:
+            fc_for_abs   = df_fc_rev_p
+            fc_val_col2  = "display_value"
+        abs_series = _abs_fixed_universe(
+            df_src2, val_col2, month_col2, fixed_cutoff, fc_for_abs,
+            fc_value_col=fc_val_col2,
+        )
         corte_lbl  = fixed_cutoff.strftime("%b %Y")
         abs_title  = f"Evolución {val_lbl2} — base fija cohortes ≤ {corte_lbl} — {pais_label}"
     else:

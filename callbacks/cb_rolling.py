@@ -413,20 +413,25 @@ def _compute_data(
 
 # ── Sección: KPIs ─────────────────────────────────────────────────────────────
 
-def _build_kpis(geo_results: list) -> list:
-    """geo_results: list of (label, v25, v26) tuples — one per geography."""
+def _build_kpis(geo_results: list, cur_year: int, prv_year: int) -> list:
+    """geo_results: list of (label, v_prev, v_curr) tuples — Q4 YoY por geografía."""
+    cur_yy = f"{cur_year % 100:02d}"
+    prv_yy = f"{prv_year % 100:02d}"
     cards = []
-    for lbl, v25, v26 in geo_results:
-        if v25 and v26 and v25 > 0:
-            yoy     = (v26 / v25) - 1
+    for lbl, v_prev, v_curr in geo_results:
+        if v_prev and v_curr and v_prev > 0:
+            yoy     = (v_curr / v_prev) - 1
             pct_txt = f"{yoy:+.1%}"
             variant = "primary" if yoy >= 0 else "naranja"
-            sub     = f"Fc: {int(round(v26/1000)):,}K  vs  Dic '25: {int(round(v25/1000)):,}K"
+            sub     = (
+                f"Q4 '{cur_yy}: {int(round(v_curr/1000)):,}K"
+                f"  vs  Q4 '{prv_yy}: {int(round(v_prev/1000)):,}K"
+            )
         else:
             pct_txt = "—"
             variant = "muted"
             sub     = "Sin datos"
-        cards.append(_kpi_card(f"Dic '26 YoY — {lbl}", pct_txt, sub, variant))
+        cards.append(_kpi_card(f"Q4 '{cur_yy} YoY — {lbl}", pct_txt, sub, variant))
     return cards
 
 
@@ -837,11 +842,13 @@ def update_rolling(pais, escenario, pathname, cohort_overrides):
         freq="MS",
     ).tolist()
 
-    # ── KPIs: Dec YoY para Consolidado, COL y MEX siempre ────────────────────
-    _DEC25 = pd.Timestamp("2025-12-01")
-    _DEC26 = pd.Timestamp("2026-12-01")
+    # ── KPIs: Q4 YoY para Consolidado, COL y MEX siempre ─────────────────────
+    cur_year = _today.year
+    prv_year = cur_year - 1
+    q4_curr  = [pd.Timestamp(f"{cur_year}-{m:02d}-01") for m in (10, 11, 12)]
+    q4_prev  = [pd.Timestamp(f"{prv_year}-{m:02d}-01") for m in (10, 11, 12)]
 
-    def _dec_vals(geo):
+    def _q4_vals(geo):
         f = build_filters(geo, None, "incluir", None)
         d = load_orders(f)
         d_fc = load_forecast(f)
@@ -859,21 +866,34 @@ def update_rolling(pais, escenario, pathname, cohort_overrides):
         )
         real_g = d.groupby("order_month")["order_count"].sum()
         real_g.index = pd.to_datetime(real_g.index)
-        v25 = float(real_g[_DEC25]) if _DEC25 in real_g.index else None
-        v26 = float(fc_g[_DEC26])   if not fc_g.empty and _DEC26 in fc_g.index else None
-        return v25, v26
+
+        # Año previo: 3 meses de Q4 desde real (deben estar todos cerrados)
+        prev_parts = [float(real_g[m]) for m in q4_prev if m in real_g.index]
+        v_prev = sum(prev_parts) if len(prev_parts) == 3 else None
+
+        # Año en curso: real si el mes está cerrado, si no forecast.
+        # Cuenta como completo solo si los 3 meses están cubiertos.
+        curr_parts = []
+        for m in q4_curr:
+            if m in real_g.index:
+                curr_parts.append(float(real_g[m]))
+            elif not fc_g.empty and m in fc_g.index:
+                curr_parts.append(float(fc_g[m]))
+        v_curr = sum(curr_parts) if len(curr_parts) == 3 else None
+
+        return v_prev, v_curr
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        fut_cons = pool.submit(_dec_vals, "CONSOLIDADO")
-        fut_col  = pool.submit(_dec_vals, "COL")
-        fut_mex  = pool.submit(_dec_vals, "MEX")
+        fut_cons = pool.submit(_q4_vals, "CONSOLIDADO")
+        fut_col  = pool.submit(_q4_vals, "COL")
+        fut_mex  = pool.submit(_q4_vals, "MEX")
         geo_results = [
             ("Consolidado", *fut_cons.result()),
             ("Colombia",    *fut_col.result()),
             ("México",      *fut_mex.result()),
         ]
 
-    kpis  = _build_kpis(geo_results)
+    kpis  = _build_kpis(geo_results, cur_year, prv_year)
     chart = _build_chart(real_by_m, fc_by_m, cutoff, pais, escenario, end_month)
     table = _build_table(cohort_rows, escenario, col_months, cutoff)
 

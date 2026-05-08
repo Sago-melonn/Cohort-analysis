@@ -260,8 +260,8 @@ def nor_filters() -> html.Div:
                 html.Div([
                     _lbl("Métrica"),
                     _radio("nor-metric", [
-                        {"label": "NOR", "value": "nor"},
-                        {"label": "NRR", "value": "nrr"},
+                        {"label": "NOR-T", "value": "nor"},
+                        {"label": "NDR-T", "value": "nrr"},
                     ], "nor"),
                 ], className="fb-group"),
                 _sep(),
@@ -297,8 +297,8 @@ def ndr_filters() -> html.Div:
                 html.Div([
                     _lbl("Métrica"),
                     _radio("ndr-metric", [
-                        {"label": "ODR — Órdenes", "value": "orders"},
-                        {"label": "NDR — Revenue", "value": "revenue"},
+                        {"label": "NOR-AT — Órdenes", "value": "orders"},
+                        {"label": "NDR-AT — Revenue", "value": "revenue"},
                     ], "orders"),
                 ], className="fb-group"),
                 _sep(),

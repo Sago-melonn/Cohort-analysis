@@ -20,7 +20,7 @@ def layout() -> html.Div:
             html.Div([
                 html.P(
                     "Algunos sellers inician con un piloto pequeño antes de operar a plena "
-                    "capacidad. Cambiar su cohorte de inicio corrige el NDR/ODR. "
+                    "capacidad. Cambiar su cohorte de inicio corrige el NDR-AT/NOR-AT. "
                     "Los ajustes se aplican de forma transversal a todas las páginas.",
                     style={"color": "#555", "fontSize": "13px", "margin": "0 0 16px"},
                 ),

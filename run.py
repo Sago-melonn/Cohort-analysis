@@ -49,4 +49,4 @@ threading.Thread(target=_warmup, daemon=True).start()
 
 
 if __name__ == "__main__":
-    dash_app.run(debug=True, port=8052)
+    dash_app.run(debug=False, port=8052)

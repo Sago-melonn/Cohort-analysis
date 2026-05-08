@@ -8,8 +8,8 @@ LOGO_URL = "https://i.postimg.cc/bNP45qQ2/MELONN-LOGO-Oscuro.png"
 
 _NAV_ITEMS = [
     {"label": "Inputs",    "icon": "▦", "href": "/inputs", "id": "nav-inputs"},
-    {"label": "NRR / NOR", "icon": "↗", "href": "/nor",    "id": "nav-nor"},
-    {"label": "NDR / ODR", "icon": "◈", "href": "/ndr",    "id": "nav-ndr"},
+    {"label": "NDR-T / NOR-T", "icon": "↗", "href": "/nor",    "id": "nav-nor"},
+    {"label": "NDR-AT / NOR-AT", "icon": "◈", "href": "/ndr",    "id": "nav-ndr"},
     {"label": "NNR / NNO", "icon": "★", "href": "/nnr",    "id": "nav-nnr"},
     {"label": "Rolling FC", "icon": "⟳", "href": "/rolling", "id": "nav-rolling"},
     {"label": "Config",    "icon": "⚙", "href": "/config",  "id": "nav-config"},

@@ -186,6 +186,8 @@ def calc_retention_series(
     universe_mode: str,
     corte_base: str,
     df_forecast: pd.DataFrame | None = None,
+    fc_month_col: str = "forecast_month",
+    fc_value_col: str = "forecasted_orders",
 ) -> pd.DataFrame:
     """
     Calcula la serie mensual de retención (NOR u NRR).
@@ -199,8 +201,9 @@ def calc_retention_series(
       "base"  → cohort_month ≤ corte_base  (fijo)
       "todos" → cohort_month < M-12        (dinámico; para Mar-2026 → hasta Feb-2025)
 
-    df_forecast: extiende la serie con forecasted_orders para meses futuros.
-                 Solo aplica cuando month_col == "order_month".
+    df_forecast: extiende la serie con valores forecast para meses futuros.
+        fc_month_col / fc_value_col permiten reutilizar para revenue forecast
+        (default: forecast_month / forecasted_orders).
 
     Retorna DataFrame con columnas:
         month, cohorts_cutoff, smooth_num, smooth_den, ratio, is_forecast
@@ -225,16 +228,16 @@ def calc_retention_series(
 
     last_actual = agg[month_col].max()
 
-    # Agregar meses de forecast (solo órdenes, futuros al último mes real)
+    # Agregar meses de forecast (futuros al último mes real)
     if df_forecast is not None and not df_forecast.empty:
         df_fc = df_forecast.copy()
-        df_fc["cohort_month"]   = pd.to_datetime(df_fc["cohort_month"])
-        df_fc["forecast_month"] = pd.to_datetime(df_fc["forecast_month"])
+        df_fc["cohort_month"] = pd.to_datetime(df_fc["cohort_month"])
+        df_fc[fc_month_col]   = pd.to_datetime(df_fc[fc_month_col])
         fc_agg = (
-            df_fc.groupby(["cohort_month", "forecast_month"])["forecasted_orders"]
+            df_fc.groupby(["cohort_month", fc_month_col])[fc_value_col]
             .sum()
             .reset_index()
-            .rename(columns={"forecast_month": month_col, "forecasted_orders": "_val"})
+            .rename(columns={fc_month_col: month_col, fc_value_col: "_val"})
         )
         fc_future = fc_agg[fc_agg[month_col] > last_actual]
         if not fc_future.empty:
@@ -289,6 +292,148 @@ def calc_retention_series(
         })
 
     return pd.DataFrame(records) if records else _empty
+
+
+# ── Revenue forecast derivado del orders forecast ────────────────────────────
+
+def compute_revenue_forecast(
+    df_orders_hist: pd.DataFrame,
+    df_revenue_hist: pd.DataFrame,
+    df_forecast_orders: pd.DataFrame,
+    today: pd.Timestamp | None = None,
+    window_months: int = 3,
+    min_orders: int = 30,
+    max_fallback_share: float = 0.5,
+) -> pd.DataFrame:
+    """
+    Convierte un forecast de órdenes en forecast de revenue usando el factor
+    revenue/order de cada seller en una ventana reciente.
+
+    Ventana = últimos `window_months` meses cerrados (mes en curso excluido)
+    filtrando solo los meses del año en curso. Si quedan 0 meses, todos los
+    sellers caen a fallback. Para aceptar el factor propio del seller exige
+    ≥ `min_orders` en la ventana. Fallback: mediana de factores válidos
+    por (country_id, segment) → country_id → global.
+
+    Si más del `max_fallback_share` del volumen total de orders forecast
+    cae en fallback country/global, retorna df vacío (baja confianza →
+    el caller debería tratar como "sin forecast de revenue").
+
+    Args:
+        df_orders_hist: DataFrame histórico de órdenes (debe tener
+            seller_id, country_id, segment, order_month, order_count).
+        df_revenue_hist: DataFrame histórico de revenue en moneda nativa
+            (seller_id, country_id, segment, revenue_month, total_revenue).
+        df_forecast_orders: DataFrame de forecast de órdenes
+            (cohort_month, forecast_month, seller_id, forecasted_orders,
+            seller_name, country_id, segment).
+        today: timestamp de referencia (default: hoy).
+        window_months: meses cerrados a usar para el factor.
+        min_orders: mínimo de órdenes en ventana para aceptar factor propio.
+        max_fallback_share: si más de esta fracción de orders forecast cae
+            en fallback country/global, retorna df vacío.
+
+    Returns:
+        DataFrame con cohort_month, forecast_month, seller_id, seller_name,
+        country_id, segment, forecasted_orders, total_revenue (forecast en
+        moneda nativa), factor, factor_source. Vacío si baja confianza.
+    """
+    if df_orders_hist.empty or df_revenue_hist.empty or df_forecast_orders.empty:
+        return pd.DataFrame()
+
+    today = pd.Timestamp(today or pd.Timestamp.today()).replace(day=1).normalize()
+    last_closed  = today - pd.DateOffset(months=1)
+    window_start = last_closed - pd.DateOffset(months=window_months - 1)
+    current_year = today.year
+
+    # ── 1. Filtrar histórico a la ventana (solo meses del año en curso) ──
+    df_o = df_orders_hist.copy()
+    df_o["order_month"] = pd.to_datetime(df_o["order_month"])
+    df_o = df_o[
+        (df_o["order_month"] >= window_start)
+        & (df_o["order_month"] <= last_closed)
+        & (df_o["order_month"].dt.year == current_year)
+    ]
+
+    df_r = df_revenue_hist.copy()
+    df_r["revenue_month"] = pd.to_datetime(df_r["revenue_month"])
+    df_r = df_r[
+        (df_r["revenue_month"] >= window_start)
+        & (df_r["revenue_month"] <= last_closed)
+        & (df_r["revenue_month"].dt.year == current_year)
+    ]
+
+    # ── 2. Factor por seller ──────────────────────────────────────────────
+    o_by = df_o.groupby("seller_id", as_index=False).agg(orders_w=("order_count", "sum"))
+    r_by = df_r.groupby("seller_id", as_index=False).agg(revenue_w=("total_revenue", "sum"))
+    sf = o_by.merge(r_by, on="seller_id", how="outer").fillna(0)
+    sf["factor_self"] = (
+        sf["revenue_w"] / sf["orders_w"]
+    ).where(sf["orders_w"] > 0)
+    sf["valid_self"] = sf["orders_w"] >= min_orders
+
+    # Metadata de seller (country_id, segment) — desde orders hist completo
+    seller_meta = (
+        df_orders_hist.drop_duplicates("seller_id")
+        [["seller_id", "country_id", "segment"]]
+    )
+    sf = sf.merge(seller_meta, on="seller_id", how="left")
+
+    # ── 3. Medianas para fallback (solo de factores VÁLIDOS) ─────────────
+    valid = sf[sf["valid_self"] & sf["factor_self"].notna()]
+    sc_med  = (valid.groupby(["country_id", "segment"])["factor_self"].median().to_dict()
+               if not valid.empty else {})
+    co_med  = (valid.groupby("country_id")["factor_self"].median().to_dict()
+               if not valid.empty else {})
+    g_med   = float(valid["factor_self"].median()) if not valid.empty else None
+
+    # ── 4. Resolver factor para cada fila del forecast ────────────────────
+    df_fc = df_forecast_orders.copy()
+    df_fc["forecast_month"] = pd.to_datetime(df_fc["forecast_month"])
+    df_fc["cohort_month"]   = pd.to_datetime(df_fc["cohort_month"])
+
+    self_map = dict(zip(
+        sf.loc[sf["valid_self"] & sf["factor_self"].notna(), "seller_id"],
+        sf.loc[sf["valid_self"] & sf["factor_self"].notna(), "factor_self"],
+    ))
+
+    self_vals = df_fc["seller_id"].map(self_map).astype(float)
+    sc_keys   = list(zip(df_fc["country_id"], df_fc["segment"]))
+    sc_vals   = pd.Series([sc_med.get(k, np.nan) for k in sc_keys], index=df_fc.index, dtype=float)
+    co_vals   = df_fc["country_id"].map(co_med).astype(float)
+    g_val     = float(g_med) if g_med is not None else np.nan
+
+    conds = [self_vals.notna(), sc_vals.notna(), co_vals.notna(), pd.notna(g_val)]
+    factors = np.select(
+        conds,
+        [self_vals, sc_vals, co_vals, np.full(len(df_fc), g_val)],
+        default=np.nan,
+    )
+    sources = np.select(
+        conds,
+        ["self", "segment", "country", "global"],
+        default="none",
+    )
+
+    df_fc["factor"]        = factors
+    df_fc["factor_source"] = sources
+    df_fc = df_fc[df_fc["factor"].notna()]
+    if df_fc.empty:
+        return pd.DataFrame()
+
+    # ── 5. Check de confianza: % de orders forecast con fallback débil ───
+    fc_total = float(df_fc["forecasted_orders"].sum())
+    if fc_total > 0:
+        weak = df_fc["factor_source"].isin(["country", "global"])
+        weak_share = float(df_fc.loc[weak, "forecasted_orders"].sum()) / fc_total
+        if weak_share > max_fallback_share:
+            return pd.DataFrame()
+
+    df_fc["total_revenue"] = df_fc["forecasted_orders"] * df_fc["factor"]
+
+    # Preserva todas las columnas originales (incluyendo lifecycle_month) y
+    # añade factor, factor_source, total_revenue.
+    return df_fc.reset_index(drop=True)
 
 
 # ── NDR / ODR — Cohort matrix ─────────────────────────────────────────────────
